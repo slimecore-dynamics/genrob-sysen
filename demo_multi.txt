@@ -1,0 +1,14 @@
+connect robot-1
+connect robot-2
+sessions
+wait 2
+robot-2 forward
+wait 1
+all stop
+wait 1
+all status checking in
+wait 1
+disconnect robot-2
+sessions
+wait 1
+quit

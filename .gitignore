@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets: never commit keys, certificates or token files
+pki/
+*.pem
+*.key
+tokens*.json
+
+# Local environments
+.venv/
+venv/
+
+# Program logs
+logs/

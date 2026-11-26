@@ -1,0 +1,14 @@
+Received data is logged to logs\user-user.log
+commands:
+  list                       list robots and their state
+  sessions                   robots you're connected to
+  connect <robot_id>         start a session with a robot (you can hold several)
+  disconnect <robot_id>      end that session
+  <robot_id> <command>       send a command, e.g.  robot-1 forward   (forward, backward, left, right, stop)
+  all <command>              send the same command to every connected robot
+  <robot_id|all> status <text>
+                             publish a status message in that robot's session
+  wait <seconds>             pause (for scripted demos)
+  help                       show this
+  quit                       exit
+> 

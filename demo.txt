@@ -1,0 +1,14 @@
+list
+connect robot-99
+connect robot-1
+wait 3
+robot-1 status operator connected
+wait 1
+robot-1 forward
+wait 1
+robot-1 stop
+wait 1
+robot-1 fly
+wait 1
+list
+quit
