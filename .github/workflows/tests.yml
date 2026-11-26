@@ -1,0 +1,58 @@
+# Runs the test suite on GitHub's machines.
+#
+#   On every push:          Linux (Python 3.11 and 3.14) and Windows (Python 3.14)
+#   "Run workflow" button:  the same, plus macOS (Python 3.14)
+#
+# The repo is private, so these use the account's monthly Actions minutes. Windows minutes count
+# double and macOS minutes ten times, which is why macOS only runs when asked for.
+# Results: the repo's Actions tab, and a check mark or cross next to each commit.
+
+name: tests
+
+on:
+  push:                    # every push, to any branch
+  workflow_dispatch:       # adds the "Run workflow" button on the Actions tab
+
+permissions:
+  contents: read           # the jobs only need to read the code
+
+concurrency:
+  # A newer push to the same branch cancels a run that's still going, so minutes
+  # aren't spent testing a commit that's already out of date.
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15    # a hung test stops here instead of using up minutes
+    strategy:
+      fail-fast: false     # one failing combination doesn't cancel the others
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.11" }    # oldest version the README promises
+          - { os: ubuntu-latest, python: "3.14" }
+          - { os: windows-latest, python: "3.14" }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip       # reuse downloaded packages between runs (keyed on requirements.txt)
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -v
+
+  macos:
+    name: macos-latest / Python 3.14
+    if: github.event_name == 'workflow_dispatch'    # only from the button
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -v
