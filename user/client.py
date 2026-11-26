@@ -110,7 +110,7 @@ class UserClient:
                     fut.set_result(data)                  # a reply to one of our requests
                 elif data["type"] == "session_ended":
                     self._notice(f"session with {data.get('robot_id')} ended: {data.get('reason')}")
-                    self._close_session(data.get("robot_id"))
+                    await self._close_session(data.get("robot_id"))
                 elif data["type"] == "robot_status":
                     self._notice(f"{data.get('robot_id')} is now {data.get('state')}")
         except ConnectionClosed:
@@ -125,7 +125,7 @@ class UserClient:
             return
         for robot_id in list(self.sessions):
             self._notice(f"session with {robot_id} ended: cloud_connection_lost")
-            self._close_session(robot_id)
+            await self._close_session(robot_id)
         self._notice("lost the Cloud Service; reconnecting")
         self.reconnector = asyncio.create_task(self._reconnect_loop())
 
@@ -190,7 +190,7 @@ class UserClient:
         # first command isn't lost and "joined" is heard.
         for pub in (session.command_pub, session.status_pub):
             if not await wait_for_subscriber(pub, COMMAND_PATH_TIMEOUT):
-                self._close_session(robot_id)
+                await self._close_session(robot_id)
                 raise ControlError("robot_unreachable")
         session.status_pub.put(status_msg(self.name, "joined"))   # the Player replies with its current state
         log.info("connected to %s via Player at %s", robot_id, ep)
@@ -198,7 +198,7 @@ class UserClient:
     async def disconnect(self, robot_id: str) -> None:
         if robot_id not in self.sessions:
             raise NotInSession(robot_id)
-        self._close_session(robot_id)
+        await self._close_session(robot_id)
         if self.ws is not None:                    # offline, the Cloud has already ended it
             await self._request("disconnect", robot_id=robot_id)
 
@@ -237,17 +237,19 @@ class UserClient:
             s.status_pub.put(status_msg(self.name, text))
 
     # ------------------------------------------------------------------ cleanup
-    def _close_session(self, robot_id) -> None:
+    async def _close_session(self, robot_id) -> None:
         session = self.sessions.pop(robot_id, None)
         if session is not None:
-            session.close()
+            # Closing a Zenoh session can block for seconds (about 2 s seen on Windows). Do it in a
+            # worker thread so the prompt and the Cloud connection keep working meanwhile.
+            await asyncio.to_thread(session.close)
 
     async def shutdown(self) -> None:
         self.closing = True
         if self.reconnector:
             self.reconnector.cancel()
         for robot_id in list(self.sessions):
-            self._close_session(robot_id)
+            await self._close_session(robot_id)
         if self.ws is not None:
             await self.ws.close()       # the Cloud ends any sessions we still owned
         if self.reader is not None:

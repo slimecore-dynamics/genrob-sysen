@@ -207,11 +207,17 @@ class RobotClient:
         subs, self.subs = self.subs, []
         pub, self.status_pub = self.status_pub, None
         z, self.zsession = self.zsession, None
-        for release in [s.undeclare for s in subs] + ([pub.undeclare] if pub else []) + [z.close]:
+        for release in [s.undeclare for s in subs] + ([pub.undeclare] if pub else []):
             try:
                 release()
             except Exception:
                 log.exception("cleanup step failed while leaving the session")
+        try:
+            # Closing a Zenoh session can block for seconds (about 2 s seen on Windows). Do it in a
+            # worker thread so heartbeats and control messages keep flowing meanwhile.
+            await asyncio.to_thread(z.close)
+        except Exception:
+            log.exception("cleanup step failed while leaving the session")
         log.info("left session (%s)", reason)
 
     # ------------------------------------------------------------------ shutdown

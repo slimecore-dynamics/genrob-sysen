@@ -214,9 +214,11 @@ Messages are fast on both: going through the Player adds about 0.03 ms (Windows)
 ## Bonus 5: Testing
 
 ```bash
-python -m pytest        # 77 tests; on Windows 76 pass and 1 is skipped (the Player Ctrl+C test runs only on Linux and macOS).
+python -m pytest        # 79 tests; on Windows 78 pass and 1 is skipped (the Player Ctrl+C test runs only on Linux and macOS).
 python -m pytest -v     # each test by name
 ```
+
+Every push runs the tests on GitHub Actions (Linux with Python 3.11 and 3.14, Windows with 3.14); macOS runs on demand. See `.github/workflows/tests.yml`.
 
 | File | What |
 |---|---|
@@ -227,11 +229,12 @@ python -m pytest -v     # each test by name
 
 Each test starts its own Cloud Service on a free port with throwaway certificates, and cleans up after itself. Timeouts are shortened per test with `monkeypatch`.
 
-**Bugs testing on Windows found** (the first by pytest, the rest by hand):
+**Bugs testing on Windows found** (the first by pytest, the next three by hand, the last by GitHub Actions):
 - **Player claimed a level it hadn't measured.** It answered `joined` with `level: normal` before any reading arrived. It now holds that reply until its first reading (`test_player_never_claims_a_level_it_has_not_measured`).
 - **User stranded when the Cloud Service restarted.** It didn't notice the connection had closed; the next request failed. It now ends its sessions, says so, and reconnects (`test_user_survives_cloud_restart`).
 - **Ctrl+C reached the Player.** Ctrl+C in a terminal goes to every process started from it, so the Player was interrupted mid-run and then force-killed after 3 s. It now runs in its own process group (`test_ctrl_c_does_not_reach_the_player`).
 - **New users refused until a restart.** The Cloud Service read tokens.json only at startup. It now re-reads it when it changes (`test_identity_added_while_cloud_runs_can_log_in`).
+- **A slow Zenoh close froze the program.** Closing a Zenoh session sometimes takes about 2 s on Windows, and it ran on the event loop, so nothing else could happen meanwhile (a frozen Robot also stops its heartbeats). It now runs in a worker thread (`test_slow_zenoh_close_does_not_freeze_the_robot`, `test_slow_zenoh_close_does_not_freeze_the_user`).
 
 ## Assumptions
 
@@ -287,6 +290,6 @@ benchmarks/
 
 ## Known limitations
 
-- Tested on Linux (Python 3.13) and Windows 11 (Python 3.14.6).
+- Tested on Linux (Python 3.11, 3.13, 3.14) and Windows 11 (Python 3.14).
 - Run on one machine. The code takes host addresses (`--host`, `--cloud-host`) and `setup_security --ip` adds machine addresses to the certificates, but a multi-machine run hasn't been done.
 - See "Not covered" under Security.

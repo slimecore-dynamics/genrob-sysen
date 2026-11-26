@@ -448,3 +448,51 @@ def test_ctrl_c_does_not_reach_the_player(pki):
     finally:
         player.stop()
     assert player.proc.returncode == 0                        # and still stops cleanly when told to
+
+
+class SlowClose:
+    """A Zenoh session whose close() takes `delay` seconds, like the ~2 s closes seen on Windows."""
+    def __init__(self, session, delay):
+        self._session, self._delay = session, delay
+
+    def close(self):
+        time.sleep(self._delay)
+        self._session.close()
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
+@pytest.mark.asyncio
+async def test_slow_zenoh_close_does_not_freeze_the_robot(cloud, make_robot, make_user, monkeypatch):
+    """Closing a Zenoh session can block for seconds (seen on Windows). It must not stop the Robot's
+    event loop: heartbeats, the goodbye and everything else keep running while it closes."""
+    real_open = robot_client.open_session
+    monkeypatch.setattr(robot_client, "open_session", lambda *a: SlowClose(real_open(*a), 3.0))
+    bot, task = await make_robot()
+    user = await make_user()
+    notices = []
+    user.on_notice = notices.append
+    await user.connect("robot-1")
+    started = time.monotonic()
+    task.cancel()
+    await bot.shutdown()
+    await wait_until(lambda: "session with robot-1 ended: robot_offline:robot_shutdown" in notices, timeout=5)
+    assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.asyncio
+async def test_slow_zenoh_close_does_not_freeze_the_user(cloud, make_robot, make_user, monkeypatch):
+    import user.client as user_client
+    real_open = user_client.open_session
+    monkeypatch.setattr(user_client, "open_session", lambda *a: SlowClose(real_open(*a), 3.0))
+    await make_robot()
+    user = await make_user()
+    await user.connect("robot-1")
+    closing = asyncio.create_task(user.disconnect("robot-1"))   # takes 3 s to close
+    await asyncio.sleep(0.1)
+    started = time.monotonic()
+    assert await user.list_robots()            # meanwhile, the User still answers right away
+    assert time.monotonic() - started < 1.0
+    assert not closing.done()                  # (the close really was still going on)
+    await closing
