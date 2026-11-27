@@ -125,9 +125,9 @@ The demonstration scenario from the assignment maps as follows:
 | Between | Each program and the Cloud Service | Robot, User and Player, peer to peer |
 | Transport | WebSocket over TLS (`wss://`, paths `/robot` and `/user`) | Zenoh in peer mode, mutual TLS |
 
-**Zenoh** provides peer-to-peer publish/subscribe without a broker in the data path. The Robot and User are only given the Player's address; Zenoh's gossip introduces them to each other, which produces the triangle the assignment describes. General Robotics' GRID platform also uses Zenoh: its client's `connect()` takes a combined `{"player": ..., "edge": ...}` Zenoh configuration.
+**Zenoh** provides peer-to-peer publish/subscribe without a broker in the data path. The Robot and User are only given the Player's address; Zenoh's gossip introduces them to each other, which produces the triangle the assignment describes. General Robotics' GRID platform also uses Zenoh: in its dev mode, the client's `connect()` takes a combined `{"player": ..., "edge": ...}` Zenoh configuration ([GRID docs: connect](https://docs.generalrobotics.dev/v2.1/python-api/grid-nexus-client/connect)).
 
-**WebSocket** is used for control because the Cloud Service needs to push messages to robots (for example, "join this session"), not only answer requests. GRID's client similarly uses a signaling WebSocket, with separate URLs for robots, users and players.
+**WebSocket** is used for control because the Cloud Service needs to push messages to robots (for example, "join this session"), not only answer requests. GRID's client similarly uses a signaling WebSocket, with separate URLs for robots, users and players ([GRID docs: GridEndpointProfile](https://docs.generalrobotics.dev/v2.2/python-api/grid-nexus-client/gridendpointprofile), [connect](https://docs.generalrobotics.dev/v2.1/python-api/grid-nexus-client/connect)).
 
 ### Session setup
 
@@ -148,7 +148,7 @@ The demonstration scenario from the assignment maps as follows:
 
 Data-plane messages are only delivered to other peers, never back to the session that sent them.
 
-Sensor types could each get their own topic under the same prefix (for example `robot/{id}/sensor/camera`), and `robot/{id}/sensor/**` would subscribe to all of them. GRID's Isaac Sim bridge uses this one-topic-per-sensor layout.
+Sensor types could each get their own topic under the same prefix (for example `robot/{id}/sensor/camera`), and `robot/{id}/sensor/**` would subscribe to all of them. GRID's Isaac Sim robot classes are configured the same way: a dictionary of Zenoh topics, with each sensor read through its own named client, such as `getImage(camera_name)` ([GRID docs: IsaacBimanual](https://docs.generalrobotics.dev/v2.3/python-api/isaac-robots/isaacbimanual)).
 
 ### Status messages
 
@@ -227,6 +227,8 @@ Possible next steps:
 | Robot or user added while the Cloud Service is running | Accepted without a restart; the Cloud Service re-reads `tokens.json` when it changes | `test_identity_added_while_cloud_runs_can_log_in` |
 | Malformed or unexpected message | Logged and refused (`bad_request`, `must_register_first`, `rejected_command`) without crashing | `test_bad_request_is_refused`, `test_register_message_must_come_first`, `test_bad_commands_are_ignored` |
 | Unexpected error in the Robot | Logged with a traceback; the Robot keeps reconnecting | |
+| Connect fails after the Player started (`robot_unreachable`) | The User ends the session on both sides; a retry is accepted | `test_failed_connect_ends_the_cloud_session` |
+| Robot drops while its Player is starting | The User stays connected to the Cloud Service; the session ends and the Player is stopped | `test_robot_dropping_during_player_start_leaves_the_user_connected` |
 
 Every session ends through `CloudService.end_session`, which stops the Player by closing its stdin and kills it if it has not exited within 3 s. Zenoh subscribers, publishers and sessions are released on every exit path, and closing a Zenoh session runs on a worker thread so it cannot block the program. The test fixtures stop every server and process, including when a test fails.
 
@@ -286,11 +288,11 @@ The direct Robot-User link is established only after both peers have connected t
 ## Testing
 
 ```bash
-python -m pytest        # 71 tests
+python -m pytest        # 75 tests
 python -m pytest -v     # list each test by name
 ```
 
-On Windows, 69 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
+On Windows, 73 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
 
 Every push runs the suite on GitHub Actions (Linux with Python 3.11 and 3.14, Windows with Python 3.14). macOS can be run manually from the Actions tab. See `.github/workflows/tests.yml`.
 

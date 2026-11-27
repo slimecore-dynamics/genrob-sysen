@@ -1,7 +1,6 @@
 """Identities, TLS contexts and tokens.
 
 Used by: cloud_service/, robot/, user/, common/mesh.py.
-Explained in Notebook 3, sections 5-8.
 
 PKI folder layout (created by tools/setup_security.py):
     pki/ca/cert.pem                      the CA everyone trusts (ca/key.pem signs new identities)
@@ -134,8 +133,10 @@ class TokenStore:
 
     @staticmethod
     def _check(table: dict, name, token) -> bool:
+        if not isinstance(name, str) or not isinstance(token, str):
+            return False                    # e.g. a list as the name would crash dict.get()
         expected = table.get(name)
-        if expected is None or not isinstance(token, str):
+        if expected is None:
             return False
         return hmac.compare_digest(fingerprint(token), expected)   # constant-time comparison
 

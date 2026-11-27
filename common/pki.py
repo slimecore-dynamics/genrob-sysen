@@ -1,7 +1,6 @@
 """Create a private Certificate Authority and certificates signed by it.
 
 Used by: tools/setup_security.py, and the test suite's fixtures.
-Explained in Notebook 3, section 3.
 
 Each certificate is valid for the given IP addresses plus "localhost". To run across several
 machines, include every machine's address (setup_security --ip ...).

@@ -1,7 +1,6 @@
 """Zenoh helpers for the data plane (the Robot / User / Player triangle).
 
 Used by: robot/client.py, user/client.py, cloud_service/player.py, benchmarks/latency.py.
-Explained in Notebook 1 (pub/sub, the triangle) and Notebook 3 section 8 (mutual TLS).
 
 Every program passes its Identity, so links are tls/ with mutual TLS: a peer must present a
 certificate signed by our CA to connect. identity=None (plain tcp/) exists only so the

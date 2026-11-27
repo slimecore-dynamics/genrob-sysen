@@ -1,7 +1,6 @@
 """Message formats, plus one Zenoh delivery helper.
 
 Used by: cloud_service/, robot/, user/.
-Explained in Notebook 2 section 2 (control messages) and Notebook 4 section 4 (wait_for_subscriber).
 
 ASSUMPTION A2: the control-plane message names and shapes below are this project's design;
 the assignment describes the behaviors only.
@@ -59,12 +58,12 @@ def msg(type_: str, **fields) -> str:
 
 
 def parse(raw) -> dict | None:
-    """Decode a control message. Returns None for anything that isn't a JSON object with a "type"."""
+    """Decode a control message. Returns None for anything that isn't a JSON object with a string "type"."""
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return None
-    if not isinstance(data, dict) or "type" not in data:
+    if not isinstance(data, dict) or not isinstance(data.get("type"), str):
         return None
     return data
 

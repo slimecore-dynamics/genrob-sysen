@@ -143,3 +143,11 @@ def test_bad_commands_are_ignored(robot, payload):
 def test_missing_identity_fails_fast(pki):
     with pytest.raises(FileNotFoundError):
         RobotClient("robot-unprovisioned", cloud_url="wss://unused", host=HOST, pki_dir=pki)
+
+
+def test_malformed_types_and_names_are_refused_not_crashed():
+    """A list where a string belongs would crash dict.get(); it must be refused instead."""
+    assert parse('{"type": ["register"]}') is None
+    store = TokenStore(robots={"robot-1": fingerprint("t")}, users={"user": fingerprint("t")})
+    assert store.check_robot(["robot-1"], "t") is False
+    assert store.check_user({"a": 1}, "t") is False

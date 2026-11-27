@@ -1,7 +1,6 @@
 """Starting and stopping Player processes.
 
 Used by: cloud_service/server.py (CloudService.start_session / end_session).
-Explained in Notebook 2, section 5.
 
 spawn_player() starts `python -m cloud_service.player ...` as a child process and waits for its
 "READY <endpoint>" line. A thread keeps reading the child's output afterwards (an undrained pipe

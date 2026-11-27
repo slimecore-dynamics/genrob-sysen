@@ -16,7 +16,6 @@ It prints everything it receives (the Cloud Service re-logs its output as [Playe
 Contract with the Cloud Service:
   - prints "READY <endpoint>" once its Zenoh session is open
   - exits cleanly when its stdin is closed
-Explained in Notebook 2 section 5; mutual TLS in Notebook 3 section 8.
 """
 import argparse
 import json

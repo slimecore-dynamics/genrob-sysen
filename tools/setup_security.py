@@ -9,7 +9,6 @@ and tokens.json keeps entries for ids not listed. For several machines, add each
 
 ASSUMPTION A11: identities are issued ahead of time by whoever runs this script (in a real fleet,
 during robot onboarding), and each robot/user only receives its own folder.
-Explained in Notebook 3.
 """
 import argparse
 from pathlib import Path

@@ -1,7 +1,6 @@
 """The User program's logic: requests to the Cloud Service, and one triangle per connected robot.
 
 Used by: user/cli.py (the command prompt calls these methods).
-Explained in Notebook 2 section 8, Notebook 3 (security), Notebook 4 section 4 (the connect() wait).
 
 start() connects to wss://.../user, sends hello with this user's token, and starts _read_loop.
 Requests (list_robots, connect, disconnect) carry a request_id; _read_loop matches each reply to
@@ -16,6 +15,7 @@ A User can hold sessions with several robots at once. Each session is its own Ze
 because each robot's triangle goes through its own Player.
 """
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -123,6 +123,11 @@ class UserClient:
                     await self._on_session_ended(data.get("robot_id"), data.get("reason"))
                 elif data["type"] == "robot_status":
                     self._notice(f"{data.get('robot_id')} is now {data.get('state')}")
+                elif data["type"] == "session_ready":
+                    # A connect() we already gave up on (request_timeout) succeeded late. Nobody is
+                    # using that session, so end it, or its Player runs until we quit.
+                    with contextlib.suppress(ConnectionClosed):
+                        await ws.send(msg("disconnect", robot_id=data.get("robot_id")))
         except ConnectionClosed:
             pass
         # The connection is over, whether it was closed cleanly (Cloud shut down) or dropped.
@@ -182,6 +187,8 @@ class UserClient:
             raise ControlError("cloud_connection_lost") from None
         try:
             reply = await asyncio.wait_for(fut, REQUEST_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise ControlError("request_timeout") from None
         finally:
             self.pending.pop(rid, None)
         if reply["type"] == "error":
@@ -197,33 +204,44 @@ class UserClient:
             raise ControlError("already_connected")
         reply = await self._request("connect", robot_id=robot_id)
         ep = reply["player_endpoint"]
-        zsession = open_session(self.host, self.identity, [ep])
-        session = RobotSession(robot_id, zsession,
-                               command_pub=zsession.declare_publisher(topic(robot_id, "command")),
-                               status_pub=zsession.declare_publisher(topic(robot_id, "status")))
-        session.subs = [zsession.declare_subscriber(topic(robot_id, t),
-                                                    lambda sample, s=session: self._dispatch(s, sample))
-                        for t in ("sensor", "processed", "status")]
-        self.sessions[robot_id] = session
+        # From here on the Cloud holds a session and a running Player for us. If anything below
+        # fails, undo both sides (_abandon), or the robot stays "in_session" and a retry is refused.
+        try:
+            zsession = open_session(self.host, self.identity, [ep])
+            session = RobotSession(robot_id, zsession,
+                                   command_pub=zsession.declare_publisher(topic(robot_id, "command")),
+                                   status_pub=zsession.declare_publisher(topic(robot_id, "status")))
+            session.subs = [zsession.declare_subscriber(topic(robot_id, t),
+                                                        lambda sample, s=session: self._dispatch(s, sample))
+                            for t in ("sensor", "processed", "status")]
+            self.sessions[robot_id] = session
 
-        # Zenoh drops a put if the sender doesn't yet know of any matching subscriber, and each side
-        # learns of the other's subscriptions separately. So check both directions:
-        # 1. Us -> Robot: our command publisher sees the Robot's command subscription.
-        for pub in (session.command_pub, session.status_pub):
-            if not await wait_for_subscriber(pub, COMMAND_PATH_TIMEOUT):
-                await self._close_session(robot_id)
-                raise ControlError("robot_unreachable")
-        # 2. Robot -> us: the Robot answers our "joined" with "ready". Until that arrives, the Robot may
-        #    not know of our subscriptions yet, and anything it sends us would be lost. Our "joined"
-        #    can itself be lost the same way, so it's repeated until the answer comes.
-        deadline = time.monotonic() + COMMAND_PATH_TIMEOUT
-        while not session.robot_heard.is_set():
-            if time.monotonic() > deadline:
-                await self._close_session(robot_id)
-                raise ControlError("robot_unreachable")
-            session.status_pub.put(status_msg(self.name, "joined"))   # the Player replies too
-            await asyncio.to_thread(session.robot_heard.wait, JOINED_RETRY)
+            # Zenoh drops a put if the sender doesn't yet know of any matching subscriber, and each side
+            # learns of the other's subscriptions separately. So check both directions:
+            # 1. Us -> Robot: our command publisher sees the Robot's command subscription.
+            for pub in (session.command_pub, session.status_pub):
+                if not await wait_for_subscriber(pub, COMMAND_PATH_TIMEOUT):
+                    raise ControlError("robot_unreachable")
+            # 2. Robot -> us: the Robot answers our "joined" with "ready". Until that arrives, the Robot
+            #    may not know of our subscriptions yet, and anything it sends us would be lost. Our
+            #    "joined" can itself be lost the same way, so it's repeated until the answer comes.
+            deadline = time.monotonic() + COMMAND_PATH_TIMEOUT
+            while not session.robot_heard.is_set():
+                if time.monotonic() > deadline:
+                    raise ControlError("robot_unreachable")
+                session.status_pub.put(status_msg(self.name, "joined"))   # the Player replies too
+                await asyncio.to_thread(session.robot_heard.wait, JOINED_RETRY)
+        except Exception:
+            await self._abandon(robot_id)
+            raise
         log.info("connected to %s via Player at %s", robot_id, ep)
+
+    async def _abandon(self, robot_id: str) -> None:
+        """connect() failed after the Cloud started a session: close our side and end the Cloud's."""
+        await self._close_session(robot_id)
+        if self.online:
+            with contextlib.suppress(ControlError):
+                await self._request("disconnect", robot_id=robot_id)
 
     async def disconnect(self, robot_id: str) -> None:
         if robot_id not in self.sessions:

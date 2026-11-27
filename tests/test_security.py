@@ -1,5 +1,4 @@
 """Security tests (Bonus 1) and flooding limits. Each one tries an attack and checks it fails.
-Explained in Notebook 3.
 """
 import asyncio
 import json
@@ -63,7 +62,7 @@ async def test_identity_added_while_cloud_runs_can_log_in(cloud, pki):
 
 @pytest.mark.asyncio
 async def test_impostor_cannot_take_over_during_reconnect_grace(cloud, make_robot, make_user, pki):
-    """The gap from Notebook 2: a robot that drops is held for RECONNECT_GRACE. Resuming needs its token."""
+    """A robot that drops is held for RECONNECT_GRACE. Resuming needs its token."""
     bot, task = await make_robot("robot-1")
     user = await make_user()
     await user.connect("robot-1")

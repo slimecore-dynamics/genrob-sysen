@@ -1,7 +1,6 @@
 """The Robot program's logic: control plane (Cloud Service) and data plane (the triangle).
 
 Started by: robot/__main__.py  ->  RobotClient(...).run()
-Explained in Notebook 2 section 7 (control), Notebook 1 (Zenoh), Notebook 3 (security).
 
 run() loops forever:
   connect to wss://.../robot -> register with token -> heartbeat in the background

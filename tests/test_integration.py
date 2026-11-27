@@ -489,3 +489,66 @@ async def test_own_subscriber_does_not_count_as_a_listener(pki):
         sub.undeclare()
         pub.undeclare()
         session.close()
+
+
+# ================================================================ Failure paths found in review
+def slow_spawn(real_spawn, delay):
+    """A spawn_player that takes `delay` seconds longer, to open a window while the Player starts."""
+    def spawn(*args):
+        time.sleep(delay)
+        return real_spawn(*args)
+    return spawn
+
+
+@pytest.mark.asyncio
+async def test_failed_connect_ends_the_cloud_session(cloud, make_robot, make_user, monkeypatch):
+    """connect() fails with robot_unreachable: the Cloud's session and Player end too, so a retry works."""
+    monkeypatch.setattr(user_client, "COMMAND_PATH_TIMEOUT", 1.0)
+    original = RobotClient._on_join_session
+    calls = []
+
+    async def join_second_time_only(self, data):          # the first join_session is ignored
+        calls.append(data)
+        if len(calls) > 1:
+            await original(self, data)
+    monkeypatch.setattr(RobotClient, "_on_join_session", join_second_time_only)
+
+    await make_robot()
+    user = await make_user()
+    with pytest.raises(ControlError, match="robot_unreachable"):
+        await user.connect("robot-1")
+    await wait_until(lambda: cloud.robots["robot-1"].session is None)
+    assert cloud.robots["robot-1"].state == "online"
+    await user.connect("robot-1")                         # the retry is accepted and works
+
+
+@pytest.mark.asyncio
+async def test_robot_dropping_during_player_start_leaves_the_user_connected(cloud, make_robot, make_user,
+                                                                            monkeypatch):
+    """The robot's socket closes while its Player starts. That must not end the User's connection."""
+    monkeypatch.setattr(user_client, "COMMAND_PATH_TIMEOUT", 1.0)
+    monkeypatch.setattr(server, "spawn_player", slow_spawn(server.spawn_player, 1.0))
+    _, task = await make_robot()
+    user = await make_user()
+    connecting = asyncio.create_task(user.connect("robot-1"))
+    await asyncio.sleep(0.3)
+    task.cancel()                                         # the robot is gone, without a goodbye
+    await cloud.robots["robot-1"].ws.close()
+    with pytest.raises(ControlError, match="robot_unreachable"):
+        await connecting
+    assert user.online                                    # still connected to the Cloud Service
+    await wait_until(lambda: cloud.robots["robot-1"].session is None)   # and the Player was stopped
+
+
+@pytest.mark.asyncio
+async def test_connect_that_times_out_does_not_leave_a_player_running(cloud, make_robot, make_user,
+                                                                      monkeypatch):
+    """The User gives up waiting (request_timeout); the session that succeeds afterwards is ended."""
+    monkeypatch.setattr(user_client, "REQUEST_TIMEOUT", 0.3)
+    monkeypatch.setattr(server, "spawn_player", slow_spawn(server.spawn_player, 1.0))
+    await make_robot()
+    user = await make_user()
+    with pytest.raises(ControlError, match="request_timeout"):
+        await user.connect("robot-1")
+    rec = cloud.robots["robot-1"]
+    await wait_until(lambda: rec.session is None and rec.state == "online")

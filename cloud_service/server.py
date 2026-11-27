@@ -1,7 +1,6 @@
 """The Cloud Service: robot registry, heartbeats, session orchestration (the control plane).
 
 Started by: cloud_service/__main__.py  ->  CloudService(...).start()
-Explained in Notebook 2 (sections 6 and 10) and Notebook 3 (sections 5-7).
 
 What runs once start() is called:
   - a wss:// server. For every client that connects, the websockets library calls _route(),
@@ -250,7 +249,7 @@ class CloudService:
 
     async def handle_connect(self, ws, name: str, data: dict) -> None:
         rid, req = data.get("robot_id"), data.get("request_id")
-        rec = self.robots.get(rid)
+        rec = self.robots.get(rid) if isinstance(rid, str) else None   # a list would crash .get()
         refusal = None
         if rec is None or rec.state == "offline":
             refusal = "robot_not_found"
@@ -268,7 +267,7 @@ class CloudService:
 
     async def handle_disconnect(self, ws, name: str, data: dict) -> None:
         rid, req = data.get("robot_id"), data.get("request_id")
-        rec = self.robots.get(rid)
+        rec = self.robots.get(rid) if isinstance(rid, str) else None   # a list would crash .get()
         if rec is None or rec.session is None or rec.session.user_ws is not ws:
             await ws.send(msg("error", reason="not_connected", robot_id=rid, request_id=req))
             return
@@ -284,16 +283,31 @@ class CloudService:
             player = await asyncio.to_thread(spawn_player, rec.robot_id, self.host,
                                              self.pki_dir, self.player_module)
         except PlayerSpawnError as err:
-            rec.state = "online"
+            if rec.state == "in_session":   # the robot may have dropped or gone offline meanwhile
+                rec.state = "online"
             log.error("spawn failed: %s", err)
             await user_ws.send(msg("error", reason="player_spawn_failed", robot_id=rec.robot_id,
+                                   request_id=request_id))
+            return
+
+        if rec.state == "offline":
+            # The robot went offline while its Player was starting: there is nothing to join.
+            await asyncio.to_thread(player.stop)
+            await user_ws.send(msg("error", reason="robot_offline", robot_id=rec.robot_id,
                                    request_id=request_id))
             return
 
         rec.session = Session(uuid.uuid4().hex[:8], rec.robot_id, user_ws, user_name, player)
         log.info("session %s: %s <-> %s via Player at %s",
                  rec.session.session_id, user_name, rec.robot_id, player.endpoint)
-        await rec.ws.send(msg("join_session", player_endpoint=player.endpoint))
+        try:
+            await rec.ws.send(msg("join_session", player_endpoint=player.endpoint))
+        except ConnectionClosed:
+            # The robot dropped while its Player was starting. This is the robot's socket, not the
+            # User's, so it must not end the User's connection. The robot is now "reconnecting":
+            # if it returns within RECONNECT_GRACE, _resume() sends it this join_session; if not,
+            # the watchdog ends the session.
+            log.warning("%s dropped while its Player was starting", rec.robot_id)
         await user_ws.send(msg("session_ready", robot_id=rec.robot_id,
                                player_endpoint=player.endpoint, request_id=request_id))
 
