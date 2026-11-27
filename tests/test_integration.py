@@ -493,7 +493,7 @@ async def test_own_subscriber_does_not_count_as_a_listener(pki):
         session.close()
 
 
-# ================================================================ Failure paths found in review
+# ================================================================ connect and Player-start failure
 def slow_spawn(real_spawn, delay):
     """A spawn_player that takes `delay` seconds longer, to open a window while the Player starts."""
     def spawn(*args):
