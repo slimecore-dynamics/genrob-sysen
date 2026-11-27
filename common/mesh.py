@@ -27,11 +27,13 @@ def free_port(host: str) -> int:
         return s.getsockname()[1]
 
 
-def make_config(host: str, listen_port: int, identity: Identity | None, connect_to=()) -> zenoh.Config:
+def make_config(host: str, listen_port: int, identity: Identity | None, connect_to=(),
+                access_control: dict | None = None) -> zenoh.Config:
     """Peer-mode config: listen on one port, connect to the given endpoints.
 
     Multicast scouting is off, so nodes only find each other through addresses the Cloud
     Service hands out. Zenoh's gossip then links Robot and User directly.
+    access_control, if given, is a Zenoh ACL (see robot_access_control below).
     """
     cfg = zenoh.Config()
     cfg.insert_json5("mode", '"peer"')
@@ -54,7 +56,34 @@ def make_config(host: str, listen_port: int, identity: Identity | None, connect_
             "listen_private_key": key, "listen_certificate": cert,
             "connect_private_key": key, "connect_certificate": cert,
         }))
+    if access_control is not None:
+        cfg.insert_json5("access_control", json.dumps(access_control))
     return cfg
+
+
+def robot_access_control(robot_id: str, user_name: str) -> dict:
+    """The Robot's Zenoh ACL for one session: authorization on top of mutual TLS.
+
+    Mutual TLS proves a peer holds a certificate from our CA, but any such certificate (another
+    robot's, say) could otherwise publish to robot/{robot_id}/command. Zenoh checks these rules on
+    the Robot itself, against the common name in each peer's certificate (tools/setup_security.py
+    names every certificate after its robot, user, or "player"):
+      - session data (sensor, status, processed) flows only with the Player and this session's User
+      - commands are accepted only from this session's User (ASSUMPTION A6: the Player doesn't relay)
+      - everything else, including any other peer, is denied
+    """
+    def rule(rule_id, names):
+        return {"id": rule_id, "permission": "allow", "messages": ["put", "delete", "declare_subscriber"],
+                "key_exprs": [topic(robot_id, n) for n in names]}
+    return {
+        "enabled": True,
+        "default_permission": "deny",
+        "rules": [rule("session-data", ("sensor", "status", "processed")), rule("commands", ("command",))],
+        "subjects": [{"id": "player", "cert_common_names": ["player"]},
+                     {"id": "operator", "cert_common_names": [user_name]}],
+        "policies": [{"rules": ["session-data"], "subjects": ["player", "operator"]},
+                     {"rules": ["commands"], "subjects": ["operator"]}],
+    }
 
 
 def topic(robot_id: str, name: str) -> str:
@@ -62,6 +91,7 @@ def topic(robot_id: str, name: str) -> str:
     return f"robot/{robot_id}/{name}"
 
 
-def open_session(host: str, identity: Identity | None, connect_to=()) -> zenoh.Session:
-    """Open a Zenoh session listening on a free port."""
-    return zenoh.open(make_config(host, free_port(host), identity, connect_to))
+def open_session(host: str, identity: Identity | None, connect_to=(),
+                 access_control: dict | None = None) -> zenoh.Session:
+    """Open a Zenoh session listening on a free port. Blocking: async callers run it on a thread."""
+    return zenoh.open(make_config(host, free_port(host), identity, connect_to, access_control))

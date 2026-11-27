@@ -55,6 +55,14 @@ class Session:
     player: PlayerProcess
 
 
+# Robot states. "starting" means a User's connect was accepted and the Player is being spawned:
+# the robot is claimed (a second User gets robot_busy) but no session is attached yet.
+#   online -> starting -> in_session -> online         (session ends)
+#   online | starting | in_session -> reconnecting      (socket dropped; held for RECONNECT_GRACE)
+#   any -> offline                                     (goodbye, heartbeat or grace timeout)
+CONNECTED = ("online", "starting", "in_session")      # states with a live robot socket
+
+
 @dataclass
 class RobotRecord:
     # field names follow GRID's PartyInstance type (robot_name, state, last_seen_ms, endpoint)
@@ -64,6 +72,7 @@ class RobotRecord:
     last_seen: float = field(default_factory=time.monotonic)
     session: Session | None = None
     disconnected_at: float | None = None
+    spawning: bool = False   # a Player spawn is in progress, even if the robot dropped meanwhile
 
 
 class CloudService:
@@ -143,7 +152,7 @@ class CloudService:
             return
 
         existing = self.robots.get(robot_id)
-        if existing and existing.state in ("online", "in_session"):
+        if existing and existing.state in CONNECTED:
             log.warning("rejected duplicate registration for %s", robot_id)
             await ws.send(msg("error", reason="duplicate_registration"))
             return
@@ -170,7 +179,7 @@ class CloudService:
             pass
         finally:
             # dropped without a goodbye: hold its place instead of ending the session
-            if rec.ws is ws and rec.state in ("online", "in_session"):
+            if rec.ws is ws and rec.state in CONNECTED:
                 rec.state = "reconnecting"
                 rec.disconnected_at = time.monotonic()
                 log.warning("%s connection dropped; holding it for %.0fs", robot_id, RECONNECT_GRACE)
@@ -179,11 +188,12 @@ class CloudService:
     async def _resume(self, rec: RobotRecord, ws) -> RobotRecord:
         """Same robot (same token) back inside the grace period: reattach it to its existing session."""
         rec.ws, rec.disconnected_at, rec.last_seen = ws, None, time.monotonic()
-        rec.state = "in_session" if rec.session else "online"
+        rec.state = "in_session" if rec.session else "starting" if rec.spawning else "online"
         await ws.send(msg("registered", robot_id=rec.robot_id, resumed=True))
         log.info("%s reconnected within the grace period", rec.robot_id)
         if rec.session:
-            await ws.send(msg("join_session", player_endpoint=rec.session.player.endpoint))
+            await ws.send(msg("join_session", player_endpoint=rec.session.player.endpoint,
+                              user=rec.session.user_name))
             await self._notify_user(rec, "in_session")
         return rec
 
@@ -201,7 +211,7 @@ class CloudService:
             await asyncio.sleep(HEARTBEAT_INTERVAL / 2)
             now = time.monotonic()
             for rec in list(self.robots.values()):
-                if rec.state in ("online", "in_session") and now - rec.last_seen > HEARTBEAT_TIMEOUT:
+                if rec.state in CONNECTED and now - rec.last_seen > HEARTBEAT_TIMEOUT:
                     await self.mark_offline(rec, "heartbeat_timeout")
                 elif rec.state == "reconnecting" and now - rec.disconnected_at > RECONNECT_GRACE:
                     await self.mark_offline(rec, "reconnect_timeout")
@@ -255,7 +265,7 @@ class CloudService:
             refusal = "robot_not_found"
         elif rec.session and rec.session.user_ws is ws:
             refusal = "already_connected"
-        elif rec.state == "in_session":
+        elif rec.state in ("starting", "in_session"):
             # ASSUMPTION A3: one User controls a robot at a time (a User may hold several robots).
             refusal = "robot_busy"
         elif rec.state == "reconnecting":
@@ -278,18 +288,20 @@ class CloudService:
     async def start_session(self, rec: RobotRecord, user_ws, user_name: str, request_id) -> None:
         # ASSUMPTION A1: the Player is spawned when a User connects (the Functional Requirements),
         # not when the robot turns on (the Overview). The assignment says both.
-        rec.state = "in_session"   # claim first: the spawn below waits, and other requests run meanwhile
+        rec.state, rec.spawning = "starting", True   # claim first: other requests run during the spawn
         try:
             player = await asyncio.to_thread(spawn_player, rec.robot_id, self.host,
                                              self.pki_dir, self.player_module)
         except PlayerSpawnError as err:
-            if rec.state == "in_session":   # the robot may have dropped or gone offline meanwhile
+            rec.spawning = False
+            if rec.state == "starting":   # the robot may have dropped or gone offline meanwhile
                 rec.state = "online"
             log.error("spawn failed: %s", err)
             await user_ws.send(msg("error", reason="player_spawn_failed", robot_id=rec.robot_id,
                                    request_id=request_id))
             return
 
+        rec.spawning = False
         if rec.state == "offline":
             # The robot went offline while its Player was starting: there is nothing to join.
             await asyncio.to_thread(player.stop)
@@ -298,10 +310,14 @@ class CloudService:
             return
 
         rec.session = Session(uuid.uuid4().hex[:8], rec.robot_id, user_ws, user_name, player)
+        if rec.state == "starting":
+            rec.state = "in_session"
+        # If the robot is "reconnecting", it stays so: _resume() moves it to in_session.
         log.info("session %s: %s <-> %s via Player at %s",
                  rec.session.session_id, user_name, rec.robot_id, player.endpoint)
         try:
-            await rec.ws.send(msg("join_session", player_endpoint=player.endpoint))
+            # The Robot only accepts commands from this User (see robot/client.py, command_acl).
+            await rec.ws.send(msg("join_session", player_endpoint=player.endpoint, user=user_name))
         except ConnectionClosed:
             # The robot dropped while its Player was starting. This is the robot's socket, not the
             # User's, so it must not end the User's connection. The robot is now "reconnecting":

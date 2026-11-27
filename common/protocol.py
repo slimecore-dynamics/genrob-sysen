@@ -9,7 +9,7 @@ Control plane (WebSocket, wss://, each program <-> Cloud Service). Every message
 
   Robot -> Cloud   register {robot_id, token}            heartbeat     goodbye
   Cloud -> Robot   registered {robot_id, resumed?}       error {reason}
-                   join_session {player_endpoint}        session_ended {robot_id, reason}
+                   join_session {player_endpoint, user}  session_ended {robot_id, reason}
 
   User  -> Cloud   hello {name, token}   (must be first)
                    list_robots {request_id}              connect {robot_id, request_id}

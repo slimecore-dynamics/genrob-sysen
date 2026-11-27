@@ -24,9 +24,9 @@ from common.config import (
     RECONNECT_BACKOFF_START,
     SENSOR_INTERVAL,
 )
-from common.mesh import open_session, topic
+from common.mesh import open_session, robot_access_control, topic
 from common.protocol import ROBOT_PATH, msg, parse, status_msg, wait_for_subscriber
-from common.security import client_tls_context, load_identity, read_token
+from common.security import check_name, client_tls_context, load_identity, read_token
 from robot.jetbot import FakeJetbot
 from robot.sensor import SineSensor
 
@@ -132,14 +132,23 @@ class RobotClient:
     # ------------------------------------------------------------------ data plane
     async def _on_join_session(self, data: dict) -> None:
         ep = data["player_endpoint"]
-        self.zsession = open_session(self.host, self.identity, [ep])
+        try:
+            user = check_name(data.get("user"))
+        except ValueError:
+            # Without the User's name there is no command ACL, so don't join rather than accept
+            # commands from anyone with a certificate.
+            log.error("join_session without a valid user name; not joining")
+            return
+        # On a worker thread: zenoh.open() blocks, and heartbeats run on this event loop.
+        self.zsession = await asyncio.to_thread(open_session, self.host, self.identity, [ep],
+                                                robot_access_control(self.robot_id, user))
         self.status_pub = self.zsession.declare_publisher(topic(self.robot_id, "status"))
         self.subs = [
             self.zsession.declare_subscriber(topic(self.robot_id, "command"), self._on_command),
             self.zsession.declare_subscriber(topic(self.robot_id, "status"), self._on_status),
         ]
         self.sensor_task = asyncio.create_task(self._sensor_loop())
-        log.info("joined session via Player at %s", ep)
+        log.info("joined session via Player at %s (commands accepted from %s only)", ep, user)
         # Announce only once someone can hear it (the Player answers with its current state).
         if not await wait_for_subscriber(self.status_pub, STATUS_PATH_TIMEOUT):
             log.warning("no status subscriber yet; 'joined' may not be seen")

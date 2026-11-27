@@ -101,7 +101,7 @@ python -m robot --robot-id robot-2 --amplitude 8    # crosses "high" every cycle
 | # | Requirement | Implementation |
 |---|---|---|
 | 1 | When a robot starts, it pings the cloud server and starts sending heartbeat messages. | `RobotClient._connect_once` registers with the robot's token; `_heartbeat_loop` sends a heartbeat every second (`robot/client.py`). |
-| 2 | The cloud service maintains the connection and status of the robot. | `CloudService.robot_handler` and `_watchdog` track each robot as `online`, `in_session`, `reconnecting` or `offline` (`cloud_service/server.py`). |
+| 2 | The cloud service maintains the connection and status of the robot. | `CloudService.robot_handler` and `_watchdog` track each robot as `online`, `starting` (its Player is being started), `in_session`, `reconnecting` or `offline` (`cloud_service/server.py`). |
 | 3 | The user connects to the cloud server and can list connected robots and connect to one. | `UserClient.start`, `list_robots` and `connect` (`user/client.py`); the `list` and `connect` commands. |
 | 4 | On a connect request, the cloud server spawns a pub/sub server, then directs the user and robot to start their own with its details. | `CloudService.start_session` starts the Player (`cloud_service/player_process.py`), waits for it to report `READY <endpoint>`, and sends that endpoint to the Robot (`join_session`) and the User (`session_ready`). Each opens its own Zenoh session, listening on its own port and connected to the Player. |
 | 5 | The three pub/sub servers form a triangle mesh and publish and subscribe to each other directly. | Once the Robot and User are both connected to the Player, Zenoh's peer gossip connects them to each other. `test_robot_and_user_are_linked_directly` verifies the direct link. |
@@ -134,7 +134,7 @@ The demonstration scenario from the assignment maps as follows:
 1. The Robot connects to `/robot`, registers with its token, and sends a heartbeat every second.
 2. The User connects to `/user`, identifies itself with its token, and sends `list_robots` and `connect robot-1`.
 3. The Cloud Service starts `python -m cloud_service.player` on a free port and waits for `READY <endpoint>`.
-4. The Cloud Service sends the endpoint to the Robot (`join_session`) and the User (`session_ready`).
+4. The Cloud Service sends the endpoint to the Robot (`join_session`, with the User's name) and the User (`session_ready`).
 5. The Robot and User open Zenoh sessions connected to the Player and announce `joined` on the status topic; the other peers reply with `ready` and their current state. The User's `connect()` returns once messages can flow in both directions: its commands can reach the Robot, and the Robot has answered its `joined`.
 
 ### Topics
@@ -177,6 +177,7 @@ This creates a private certificate authority, a certificate for each program, an
 | Impersonating a robot or user | Each must present its token. The Cloud Service stores only SHA-256 fingerprints and compares them in constant time. | `test_robot_with_wrong_token_is_refused`, `test_robot_cannot_use_another_robots_token`, `test_user_with_wrong_token_is_refused` |
 | Taking over a session during the reconnect grace period | Resuming a session also requires the robot's token | `test_impostor_cannot_take_over_during_reconnect_grace` |
 | Joining a session and sending commands | Zenoh mutual TLS: every peer must present a certificate signed by the project's CA | `test_untrusted_zenoh_peer_cannot_join_or_command`, `test_unencrypted_zenoh_peer_cannot_join` |
+| Commanding a robot with another valid certificate (for example robot-2's) | Authorization: the Robot's Zenoh access-control rules accept commands only from the certificate named after the session's User, and session data only from that User and the Player (`robot_access_control` in `common/mesh.py`) | `test_another_robots_certificate_cannot_command_this_robot` |
 | Holding connections open without identifying | Closed after `FIRST_MESSAGE_TIMEOUT` (5 s) | `test_silent_connection_is_closed` |
 | Opening too many connections | Refused beyond `MAX_CONNECTIONS` (close code 1013, "try again later") | `test_connection_cap` |
 | Other local users reading keys | Private keys and tokens are written with mode 600 (Linux and macOS) | `test_private_keys_and_tokens_are_owner_only` |
@@ -184,7 +185,7 @@ This creates a private certificate authority, a certificate for each program, an
 
 ### Known gaps
 
-- **Isolation between sessions.** Any certificate signed by the CA could join another session if it learned that session's Player address. The Cloud Service only gives addresses to the matching Robot and User, but a full fix needs authorization: Zenoh access-control rules keyed to certificate names (for example, only `user` may publish to `robot/robot-1/command`), or per-session credentials.
+- **Isolation between sessions.** Commands are authorized: the Robot accepts them only from the session's User. The Player and User have no access-control rules yet, so another valid certificate that learned a session's Player address could still connect to the Player and the User, read the sensor and processed data, and publish status messages to them. The fix is the same kind of rules on the Player and the User, keyed to the session's Robot and User certificate names.
 - **Revocation.** Removing a fingerprint from `tokens.json` blocks new logins immediately, but does not disconnect a robot or user that is already connected. Certificates remain valid until they expire (90 days). Short-lived certificates or a revocation list would close this gap.
 - **Rate limiting.** Connections are capped, but an authenticated client can send messages at any rate.
 - **Key storage.** `pki/ca/key.pem` can sign any identity. In a real deployment it would be kept offline, and each robot would receive only its own folder.
@@ -217,6 +218,7 @@ Possible next steps:
 | Duplicate registration | The second robot is refused (`duplicate_registration`) | `test_duplicate_registration_refused` |
 | Player fails to start | The Player is killed, the User receives `player_spawn_failed`, and the robot returns to `online` | `test_player_spawn_failure` |
 | Robot already in a session | The second User receives `robot_busy` | `test_second_user_gets_robot_busy` |
+| Second connect while the first User's Player is starting | The robot is `starting`, so the second User receives `robot_busy` | `test_robot_is_starting_while_its_player_spawns` |
 | Robot reconnecting | `robot_reconnecting` | `test_connect_while_robot_reconnecting` |
 | Heartbeats stop | Offline after 3 missed heartbeats; the session ends, the Player is stopped, both sides are notified, and the motors stop | `test_heartbeat_timeout_ends_session` |
 | Robot connection drops | Held as `reconnecting` for 5 s; if the robot re-registers in time, it resumes the same session and Player | `test_drop_and_reconnect_resumes_same_session`, `test_drop_without_return_ends_session` |
@@ -230,7 +232,7 @@ Possible next steps:
 | Connect fails after the Player started (`robot_unreachable`) | The User ends the session on both sides; a retry is accepted | `test_failed_connect_ends_the_cloud_session` |
 | Robot drops while its Player is starting | The User stays connected to the Cloud Service; the session ends and the Player is stopped | `test_robot_dropping_during_player_start_leaves_the_user_connected` |
 
-Every session ends through `CloudService.end_session`, which stops the Player by closing its stdin and kills it if it has not exited within 3 s. Zenoh subscribers, publishers and sessions are released on every exit path, and closing a Zenoh session runs on a worker thread so it cannot block the program. The test fixtures stop every server and process, including when a test fails.
+Every session ends through `CloudService.end_session`, which stops the Player by closing its stdin and kills it if it has not exited within 3 s. Zenoh subscribers, publishers and sessions are released on every exit path, and opening and closing a Zenoh session run on a worker thread so they cannot block the program. The test fixtures stop every server and process, including when a test fails.
 
 ## Performance
 
@@ -288,11 +290,11 @@ The direct Robot-User link is established only after both peers have connected t
 ## Testing
 
 ```bash
-python -m pytest        # 75 tests
+python -m pytest        # 77 tests
 python -m pytest -v     # list each test by name
 ```
 
-On Windows, 73 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
+On Windows, 75 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
 
 Every push runs the suite on GitHub Actions (Linux with Python 3.11 and 3.14, Windows with Python 3.14). macOS can be run manually from the Actions tab. See `.github/workflows/tests.yml`.
 
@@ -316,6 +318,7 @@ The code was also checked with ruff (lint), bandit (security patterns), pip-audi
 - **Ctrl+C reached the Player.** Ctrl+C in a terminal is delivered to every process started from it, so Players were interrupted and then killed after the 3 s timeout. Players now run in their own process group. (`test_ctrl_c_does_not_reach_the_player`)
 - **New identities required a restart.** The Cloud Service read `tokens.json` only at startup. It now re-reads the file when it changes. (`test_identity_added_while_cloud_runs_can_log_in`)
 - **Closing a Zenoh session could block the program.** Closing a session sometimes takes about 2 s on Windows, and it ran on the event loop, which also stopped a Robot's heartbeats. It now runs on a worker thread. (`test_slow_zenoh_close_does_not_freeze_the_robot`, `test_slow_zenoh_close_does_not_freeze_the_user`)
+- **A test assumed the first raw reading always arrives.** After opening a Zenoh session also moved to a worker thread, the Robot's first reading was sometimes sent while it did not yet know of the User's subscription. Zenoh dropped it, but the Player, which knew of the User sooner, still relayed its processed copy. `test_full_triangle` took the first processed message and expected a raw reading before it, and failed in about 1 run in 4. It now waits for both kinds of message, and passed 12 runs in a row on its own and 6 full-suite runs.
 - **Messages lost at the start and end of a session.** `connect()` only verified the User-to-Robot direction, so the Robot's first messages could be dropped. Separately, the Robot's `leaving` message could arrive just after the Cloud Service's session-ended notice, and was lost when the User closed its session. Both are fixed; the failure reproduced on Linux under CPU load in about 1 run in 4, and did not recur in 40 runs after the fix. (`test_robot_ctrl_c_ends_session_with_robot_shutdown`, `test_user_waits_for_leaving_that_arrives_after_session_ended`)
 - **A session's own subscriber counted as a listener.** The Robot and User publish and subscribe on the status topic in the same Zenoh session, and Zenoh treats the session's own subscriber as a match, so the check for a listener passed before any other peer could receive the message. This caused 6 failures in 10 runs on Windows. Data-plane messages are now delivered to remote peers only (`common/mesh.py`). (`test_own_subscriber_does_not_count_as_a_listener`)
 
@@ -371,7 +374,7 @@ user/
 tools/
   setup_security.py  creates pki/
 tests/               conftest.py, helpers.py, test_units.py, test_integration.py,
-                     test_security.py, test_repo.py, test_dashboard.py
+                     test_security.py, test_repo.py
 benchmarks/
   latency.py
 ```

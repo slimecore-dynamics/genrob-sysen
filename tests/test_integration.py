@@ -49,7 +49,9 @@ async def test_full_triangle(cloud, make_robot, make_user):
     await user.connect("robot-1")
     assert cloud.robots["robot-1"].state == "in_session"
 
-    await wait_until(lambda: any(t.endswith("/processed") for t, _ in received))
+    # Wait for both: the Robot's first reading can be dropped while it doesn't yet know of our
+    # subscription, even though the Player (which knew of us sooner) relays its processed copy.
+    await wait_until(lambda: {t.rsplit("/", 1)[1] for t, _ in received} >= {"sensor", "processed"})
     sensor = next(d for t, d in received if t.endswith("/sensor"))
     assert set(sensor) == {"state"}
     for t, d in received:
@@ -552,3 +554,17 @@ async def test_connect_that_times_out_does_not_leave_a_player_running(cloud, mak
         await user.connect("robot-1")
     rec = cloud.robots["robot-1"]
     await wait_until(lambda: rec.session is None and rec.state == "online")
+
+@pytest.mark.asyncio
+async def test_robot_is_starting_while_its_player_spawns(cloud, make_robot, make_user, monkeypatch):
+    """While the Player starts, the robot is "starting": claimed, so a second User gets robot_busy."""
+    monkeypatch.setattr(server, "spawn_player", slow_spawn(server.spawn_player, 1.0))
+    await make_robot()
+    first, second = await make_user("first"), await make_user("second")
+    connecting = asyncio.create_task(first.connect("robot-1"))
+    await wait_until(lambda: cloud.robots["robot-1"].state == "starting")
+    assert {"robot_id": "robot-1", "state": "starting"} in await second.list_robots()
+    with pytest.raises(ControlError, match="robot_busy"):
+        await second.connect("robot-1")
+    await connecting
+    assert cloud.robots["robot-1"].state == "in_session"

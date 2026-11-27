@@ -5,6 +5,7 @@ Real jetbot: https://github.com/NVIDIA-AI-IOT/jetbot (jetbot/robot.py). Motor va
 To drive real hardware, swap this for `from jetbot import Robot`; the method names match.
 """
 import logging
+import threading
 
 log = logging.getLogger("Jetbot")
 
@@ -13,11 +14,15 @@ class FakeJetbot:
     def __init__(self) -> None:
         self.left_motor = 0.0
         self.right_motor = 0.0
+        # Commands arrive on Zenoh threads while the event loop may call stop() (leaving a session),
+        # so motor changes are serialized: the log line and the values always match.
+        self._lock = threading.Lock()
 
     def set_motors(self, left: float, right: float) -> None:
-        if (left, right) != (self.left_motor, self.right_motor):
-            log.info("motors left=%.2f right=%.2f", left, right)
-        self.left_motor, self.right_motor = left, right
+        with self._lock:
+            if (left, right) != (self.left_motor, self.right_motor):
+                log.info("motors left=%.2f right=%.2f", left, right)
+            self.left_motor, self.right_motor = left, right
 
     def forward(self, speed: float = 0.5) -> None:
         self.set_motors(speed, speed)

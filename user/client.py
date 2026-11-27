@@ -187,7 +187,7 @@ class UserClient:
             raise ControlError("cloud_connection_lost") from None
         try:
             reply = await asyncio.wait_for(fut, REQUEST_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise ControlError("request_timeout") from None
         finally:
             self.pending.pop(rid, None)
@@ -207,7 +207,8 @@ class UserClient:
         # From here on the Cloud holds a session and a running Player for us. If anything below
         # fails, undo both sides (_abandon), or the robot stays "in_session" and a retry is refused.
         try:
-            zsession = open_session(self.host, self.identity, [ep])
+            # On a worker thread: zenoh.open() blocks, and replies from the Cloud arrive on this loop.
+            zsession = await asyncio.to_thread(open_session, self.host, self.identity, [ep])
             session = RobotSession(robot_id, zsession,
                                    command_pub=zsession.declare_publisher(topic(robot_id, "command")),
                                    status_pub=zsession.declare_publisher(topic(robot_id, "status")))
