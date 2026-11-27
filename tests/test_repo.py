@@ -9,7 +9,7 @@ import pytest
 from tests.helpers import HOST, wait_until
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TEXT_SUFFIXES = {".py", ".md", ".txt", ".ini", ".cfg", ".toml", ".yml", ".yaml", ".json"}
+TEXT_SUFFIXES = {".py", ".md", ".txt", ".ini", ".cfg", ".toml", ".yml", ".yaml", ".json", ".html"}
 
 
 def repo_text_files():

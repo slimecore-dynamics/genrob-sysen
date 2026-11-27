@@ -72,7 +72,17 @@ tail -f logs/user-user.log                # macOS/Linux
 
 The Cloud Service logs to `logs/cloud.log`, including the output of every Player, and each Robot logs to `logs/<robot-id>.log`. Use `--log-file` to change the location.
 
+### Dashboard
+
+```bash
+python -m dashboard        # opens http://127.0.0.1:8800
+```
+
+A read-only, live view of the log files: one line per robot over the last 60 seconds, with readings the Player classified as high marked, a SOLO button per robot, and the active sessions. It only reads the logs; it never starts, stops or talks to the programs. "Clear logs" empties the log files. The dashboard listens on 127.0.0.1 only, rejects requests that don't name this machine in their Host header, and requires a per-run token for clearing logs.
+
 ### Scripted demos
+
+The demos need the Cloud Service and the robots they use already running (`robot-1` for `demo.txt`; `robot-1` and `robot-2` for `demo_multi.txt`). The Player is started by the Cloud Service when the demo connects; it isn't started by hand.
 
 ```bash
 python -m user < demo.txt          # one robot (robot-1)
@@ -276,11 +286,11 @@ The direct Robot-User link is established only after both peers have connected t
 ## Testing
 
 ```bash
-python -m pytest        # 69 tests
+python -m pytest        # 71 tests
 python -m pytest -v     # list each test by name
 ```
 
-On Windows, 67 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
+On Windows, 69 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
 
 Every push runs the suite on GitHub Actions (Linux with Python 3.11 and 3.14, Windows with Python 3.14). macOS can be run manually from the Actions tab. See `.github/workflows/tests.yml`.
 
@@ -290,6 +300,7 @@ Every push runs the suite on GitHub Actions (Linux with Python 3.11 and 3.14, Wi
 | `tests/test_integration.py` | Real Cloud Service, Robot, User and Player processes: the triangle, status from every entity, multiple robots and users, and every failure case listed above |
 | `tests/test_security.py` | Each attack in the security table, and the connection limits |
 | `tests/test_repo.py` | Every text file is ASCII; received data goes to the log, not the User's terminal |
+| `tests/test_dashboard.py` | Merging one reading logged by several programs, and the protections on clearing logs |
 
 Each test starts its own Cloud Service on a free port with throwaway certificates and cleans up after itself. Timeouts are shortened per test with `monkeypatch`.
 
@@ -342,6 +353,10 @@ cloud_service/
   server.py          registry, heartbeats, watchdog, sessions, security checks
   player_process.py  starting and stopping Players
   player.py          the Player program (started by the Cloud Service)
+dashboard/
+  logwatch.py        reading and merging the logs
+  server.py          web server
+  page.html          the page
 robot/
   __main__.py        entry point
   client.py          registration, heartbeat, reconnection, session handling, status
