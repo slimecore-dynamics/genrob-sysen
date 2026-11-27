@@ -371,7 +371,7 @@ user/
 tools/
   setup_security.py  creates pki/
 tests/               conftest.py, helpers.py, test_units.py, test_integration.py,
-                     test_security.py, test_repo.py
+                     test_security.py, test_repo.py, test_dashboard.py
 benchmarks/
   latency.py
 ```
