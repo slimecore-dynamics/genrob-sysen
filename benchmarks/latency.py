@@ -87,7 +87,10 @@ def zenoh_round_trip(count: int, ident_a, ident_b) -> list[float]:
         if i >= WARMUP:
             samples.append((time.perf_counter_ns() - t0) / 1e6)
 
-    echo.undeclare(); pong.undeclare(); a.close(); b.close()
+    echo.undeclare()
+    pong.undeclare()
+    a.close()
+    b.close()
     return samples
 
 
@@ -125,7 +128,9 @@ def sensor_paths(count: int, pki: Path) -> tuple[list[float], list[float]]:
 
     for s in subs:
         s.undeclare()
-    robot.close(); user.close(); player.stop()
+    robot.close()
+    user.close()
+    player.stop()
     return direct, via_player
 
 

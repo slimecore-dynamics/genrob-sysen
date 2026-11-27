@@ -4,12 +4,14 @@ Explained in Notebook 3.
 import asyncio
 import json
 import ssl
+import stat
+import sys
 
 import pytest
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 
-import cloud_service.server as server
+from cloud_service import server
 from common.config import cloud_url
 from common.mesh import open_session, topic
 from common.pki import make_ca, make_cert
@@ -17,6 +19,7 @@ from common.protocol import msg
 from common.security import Identity, client_tls_context
 from robot.client import RegistrationRefused, RobotClient
 from tests.helpers import HOST, wait_until
+from tools.setup_security import setup
 from user.client import ControlError, UserClient
 
 
@@ -49,7 +52,6 @@ async def test_user_with_wrong_token_is_refused(cloud, pki):
 @pytest.mark.asyncio
 async def test_identity_added_while_cloud_runs_can_log_in(cloud, pki):
     """setup_security run while the Cloud Service is up: the new user is accepted without a restart."""
-    from tools.setup_security import setup
     setup(pki, users=["late-user"])
     user = UserClient("late-user", cloud_url(HOST, cloud.port), HOST, pki)
     await user.start()
@@ -172,3 +174,16 @@ async def test_register_message_must_come_first(cloud, pki):
         await ws.send(msg("heartbeat"))
         reply = json.loads(await ws.recv())
     assert reply == {"type": "error", "reason": "must_register_first"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows ignores file modes; files inherit the folder's permissions")
+def test_private_keys_and_tokens_are_owner_only(pki):
+    for path in [pki / "ca" / "key.pem", pki / "robots" / "robot-1" / "key.pem",
+                 pki / "robots" / "robot-1" / "token"]:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
+
+
+@pytest.mark.parametrize("name", ["robot/1", "robot-*", "../cloud"])   # topic level, wildcard, path
+def test_names_that_could_escape_a_folder_or_topic_are_refused(pki, name):
+    with pytest.raises(ValueError):
+        setup(pki, robots=[name])

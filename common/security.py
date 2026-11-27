@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import ssl
 from dataclasses import dataclass
@@ -29,10 +30,21 @@ class Identity:
     ca: Path
 
 
+VALID_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def check_name(name: str) -> str:
+    """Robot ids and user names become folder names and parts of Zenoh topics, where "/", "*", "$"
+    or ".." would mean something else entirely. Allow letters, digits, "-" and "_" only."""
+    if not isinstance(name, str) or not VALID_NAME.fullmatch(name):
+        raise ValueError(f"invalid name {name!r}: use letters, digits, '-' or '_' (at most 64)")
+    return name
+
+
 def identity_dir(pki_dir, kind: str, name: str = "") -> Path:
     """kind is 'cloud', 'player', 'robots' or 'users'; robots and users also need a name."""
     base = Path(pki_dir)
-    return base / kind if kind in ("cloud", "player") else base / kind / name
+    return base / kind if kind in ("cloud", "player") else base / kind / check_name(name)
 
 
 def load_identity(pki_dir, kind: str, name: str = "") -> Identity:

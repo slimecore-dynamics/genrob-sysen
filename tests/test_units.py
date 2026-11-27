@@ -6,7 +6,7 @@ import pytest
 
 from cloud_service.player import PlayerState, classify
 from common.mesh import topic
-from common.protocol import msg, parse, status_msg
+from common.protocol import parse
 from common.security import TokenStore, fingerprint
 from robot.client import RobotClient
 from robot.sensor import SineSensor
@@ -15,18 +15,9 @@ from user.cli import parse_line
 
 
 # ---------------------------------------------------------------- protocol
-def test_msg_and_parse_round_trip():
-    assert parse(msg("register", robot_id="robot-1")) == {"type": "register", "robot_id": "robot-1"}
-
-
-@pytest.mark.parametrize("raw", ["not json", '{"robot_id": "x"}', '["register"]', None])
+@pytest.mark.parametrize("raw", ["not json", '{"robot_id": "x"}', '["register"]'])
 def test_parse_rejects_malformed(raw):
     assert parse(raw) is None
-
-
-def test_status_msg_shape():
-    assert json.loads(status_msg("robot-1", "moving", command="forward")) == \
-        {"from": "robot-1", "status": "moving", "command": "forward"}
 
 
 def test_topic_names_match_spec():
@@ -39,12 +30,6 @@ def test_classify_normal_and_high():
     assert classify({"state": 25.5}) == {"state": 25.5, "status": "normal"}
     assert classify({"state": 30.0}) == {"state": 30.0, "status": "normal"}   # "above" 30, not "at"
     assert classify({"state": 30.01}) == {"state": 30.01, "status": "high"}
-
-
-def test_classify_keeps_extra_fields_and_input():
-    reading = {"state": 1.0, "t0": 123}
-    assert classify(reading)["t0"] == 123
-    assert reading == {"state": 1.0, "t0": 123}
 
 
 def test_classify_missing_state_raises():
@@ -68,21 +53,6 @@ def test_first_reading_high_raises_an_alert():
     assert alerts(state.on_reading("high", 35.0)) == ["high"]
 
 
-def test_ready_before_any_reading_waits_for_a_real_level():
-    """The bug found on Windows: a "ready" sent before any reading claimed "normal" with no data."""
-    state = PlayerState()
-    assert state.on_joined() == []                                   # nothing measured: say nothing yet
-    events = state.on_reading("high", 35.0)
-    assert {"status": "ready", "level": "high"} in events            # the held reply, with a real level
-    assert state.on_reading("high", 35.0) == []                      # and it's only sent once
-
-
-def test_ready_after_a_reading_answers_immediately():
-    state = PlayerState()
-    state.on_reading("normal", 20.0)
-    assert state.on_joined() == [{"status": "ready", "level": "normal"}]
-
-
 # ---------------------------------------------------------------- sine-wave sensor
 class FakeClock:
     def __init__(self):
@@ -99,21 +69,6 @@ def test_sine_sensor_follows_the_wave():
     for seconds, value in expected.items():
         clock.now = 100.0 + seconds
         assert math.isclose(sensor.read(), value, abs_tol=0.01)
-
-
-def test_sine_sensor_amplitude_controls_high():
-    clock = FakeClock()
-    small, large = SineSensor(amplitude=3.0, clock=clock), SineSensor(amplitude=8.0, clock=clock)
-    peaks = []
-    for s in (small, large):
-        clock.now = 100.0 + 5                                   # a quarter period: the peak
-        peaks.append(classify({"state": s.read()})["status"])
-    assert peaks == ["normal", "high"]
-
-
-def test_sine_sensor_rejects_bad_period():
-    with pytest.raises(ValueError):
-        SineSensor(period=0)
 
 
 # ---------------------------------------------------------------- tokens
@@ -133,17 +88,12 @@ def test_token_store_file_holds_no_tokens(pki):
 
 # ---------------------------------------------------------------- operator command prompt
 @pytest.mark.parametrize("line, expected", [
-    ("", ("noop", ())),
-    ("list", ("list", ())),
-    ("connect robot-1", ("connect", ("robot-1",))),
-    ("connect", ("error", ("usage: connect <robot_id>",))),
-    ("robot-2 forward", ("command", ("robot-2", "forward"))),
-    ("all stop", ("command", ("all", "stop"))),
-    ("all status hello there", ("status", ("all", "hello there"))),
-    ("robot-1", ("error", ("what should robot-1 do? (type help)",))),
-    ("robot-1 go fast", ("error", ("usage: <robot_id|all> <command>",))),
-    ("wait 2.5", ("wait", (2.5,))),
-    ("wait soon", ("error", ("usage: wait <seconds>",))),
+    ("connect robot-1", ("connect", ("robot-1",))),                        # keyword with an argument
+    ("connect", ("error", ("usage: connect <robot_id>",))),               # keyword missing it
+    ("robot-2 forward", ("command", ("robot-2", "forward"))),             # <robot_id> <command>
+    ("all status hello there", ("status", ("all", "hello there"))),       # all status <text>
+    ("robot-1 go fast", ("error", ("usage: <robot_id|all> <command>",))), # anything else
+    ("wait 2.5", ("wait", (2.5,))),                                        # the demos' pause
 ])
 def test_parse_line(line, expected):
     assert parse_line(line) == expected

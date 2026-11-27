@@ -40,6 +40,13 @@ def make_config(host: str, listen_port: int, identity: Identity | None, connect_
     cfg.insert_json5("connect/endpoints", json.dumps(list(connect_to)))
     cfg.insert_json5("scouting/multicast/enabled", "false")
     cfg.insert_json5("scouting/delay", str(ZENOH_SCOUTING_DELAY_MS))
+    # Publish robot/... messages to other peers only, never back to this session's own subscribers.
+    # No program here needs its own messages, and it fixes a real bug: a session that subscribes and
+    # publishes on the same topic (status) counted its own subscriber as a match, so
+    # wait_for_subscriber() returned before any other peer could hear, and the next message could be
+    # lost (found on Windows: test_player_never_claims_a_level_it_has_not_measured, 6 of 10 failed).
+    cfg.insert_json5("qos/publication", json.dumps(
+        [{"key_exprs": ["robot/**"], "config": {"allowed_destination": "remote"}}]))
     if identity is not None:
         key, cert = str(identity.key), str(identity.cert)
         cfg.insert_json5("transport/link/tls", json.dumps({

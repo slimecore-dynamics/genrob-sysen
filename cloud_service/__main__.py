@@ -6,13 +6,14 @@ Needs pki/ from: python -m tools.setup_security (see README).
 """
 import argparse
 import asyncio
+import contextlib
 from pathlib import Path
 
 import zenoh
 
+from cloud_service.server import CloudService
 from common import logs
 from common.config import DEFAULT_CLOUD_PORT, DEFAULT_HOST, DEFAULT_PKI_DIR
-from cloud_service.server import CloudService
 
 
 async def main(args) -> None:
@@ -33,7 +34,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     logs.setup(args.log_file)
     zenoh.init_log_from_env_or("error")
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main(args))
-    except KeyboardInterrupt:
-        pass

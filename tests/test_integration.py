@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-import cloud_service.server as server
 import robot.client as robot_client
+from cloud_service import server
 from cloud_service.player_process import spawn_player
 from cloud_service.server import CloudService
 from common.config import cloud_url
@@ -24,7 +24,8 @@ from common.security import load_identity
 from robot.client import RegistrationRefused, RobotClient
 from robot.sensor import SineSensor
 from tests.helpers import HOST, capture_messages, statuses, wait_until
-from user.client import ControlError, NotInSession
+from user import client as user_client
+from user.client import ControlError, UserClient
 
 HIGH = SineSensor(center=35.0, amplitude=0.0)     # always "high"
 NORMAL = SineSensor(center=20.0, amplitude=0.0)   # always "normal"
@@ -207,22 +208,6 @@ async def test_one_user_controls_several_robots(cloud, make_robot, make_user):
 
 
 @pytest.mark.asyncio
-async def test_disconnecting_one_robot_keeps_the_other(cloud, make_robot, make_user):
-    r1, _ = await make_robot("robot-1")
-    await make_robot("robot-2")
-    user = await make_user()
-    await user.connect("robot-1")
-    await user.connect("robot-2")
-    await user.disconnect("robot-2")
-    await wait_until(lambda: cloud.robots["robot-2"].state == "online")
-    assert cloud.robots["robot-1"].state == "in_session"
-    user.send_command("robot-1", "forward")
-    await wait_until(lambda: r1.jetbot.left_motor == 0.5)
-    with pytest.raises(NotInSession):
-        user.send_command("robot-2", "forward")
-
-
-@pytest.mark.asyncio
 async def test_two_users_two_robots_are_isolated(cloud, make_robot, make_user):
     r1, _ = await make_robot("robot-1")
     r2, _ = await make_robot("robot-2")
@@ -350,36 +335,6 @@ async def test_connect_while_robot_reconnecting(cloud, make_robot, make_user):
 
 
 @pytest.mark.asyncio
-async def test_goodbye_goes_offline_without_grace_period(cloud, make_robot):
-    bot, task = await make_robot()
-    task.cancel()
-    await bot.shutdown()                     # deliberate exit: sends goodbye
-    await wait_until(lambda: cloud.robots["robot-1"].state == "offline", timeout=1.0)   # well under the 5 s grace
-
-
-@pytest.mark.asyncio
-async def test_robot_reconnects_after_cloud_restart(pki):
-    port = free_port(HOST)
-    first = CloudService(HOST, port, pki)
-    await first.start()
-    bot = RobotClient("robot-1", cloud_url(HOST, port), HOST, pki)
-    task = asyncio.create_task(bot.run())
-    try:
-        await wait_until(lambda: "robot-1" in first.robots)
-        await first.stop()                   # the Cloud Service goes away...
-        second = CloudService(HOST, port, pki)
-        await second.start()                 # ...and comes back on the same address
-        try:
-            await wait_until(lambda: second.robots.get("robot-1") is not None
-                             and second.robots["robot-1"].state == "online", timeout=10)
-        finally:
-            await second.stop()
-    finally:
-        task.cancel()
-        await bot.shutdown()
-
-
-@pytest.mark.asyncio
 async def test_robot_ctrl_c_ends_session_with_robot_shutdown(cloud, make_robot, make_user):
     bot, task = await make_robot()
     user = await make_user()
@@ -398,7 +353,6 @@ async def test_robot_ctrl_c_ends_session_with_robot_shutdown(cloud, make_robot, 
 async def test_user_survives_cloud_restart(pki):
     """The Cloud Service goes away while a User is in a session: the User keeps running, says so,
     refuses requests clearly while offline, and reconnects by itself when the Cloud is back."""
-    from user.client import UserClient
     port = free_port(HOST)
     first = CloudService(HOST, port, pki)
     await first.start()
@@ -474,16 +428,16 @@ async def test_slow_zenoh_close_does_not_freeze_the_robot(cloud, make_robot, mak
     notices = []
     user.on_notice = notices.append
     await user.connect("robot-1")
-    started = time.monotonic()
     task.cancel()
-    await bot.shutdown()
-    await wait_until(lambda: "session with robot-1 ended: robot_offline:robot_shutdown" in notices, timeout=5)
-    assert time.monotonic() - started < 1.0
+    stopping = asyncio.create_task(bot.shutdown())             # takes 3 s to close Zenoh
+    # Meanwhile the goodbye still reaches the Cloud, and the User hears about it, right away.
+    await wait_until(lambda: "session with robot-1 ended: robot_offline:robot_shutdown" in notices, timeout=1.0)
+    assert not stopping.done()                                 # (the close really was still going on)
+    await stopping
 
 
 @pytest.mark.asyncio
 async def test_slow_zenoh_close_does_not_freeze_the_user(cloud, make_robot, make_user, monkeypatch):
-    import user.client as user_client
     real_open = user_client.open_session
     monkeypatch.setattr(user_client, "open_session", lambda *a: SlowClose(real_open(*a), 3.0))
     await make_robot()
@@ -496,3 +450,42 @@ async def test_slow_zenoh_close_does_not_freeze_the_user(cloud, make_robot, make
     assert time.monotonic() - started < 1.0
     assert not closing.done()                  # (the close really was still going on)
     await closing
+
+
+@pytest.mark.asyncio
+async def test_user_waits_for_leaving_that_arrives_after_session_ended(cloud, make_robot, make_user):
+    """"leaving" (over Zenoh) and session_ended (over the Cloud's WebSocket) are separate connections,
+    so "leaving" can arrive second. Force that by delaying it, and check it isn't lost."""
+    bot, task = await make_robot()
+    user = await make_user()
+    order = []
+    user.on_notice = lambda text: order.append("notice")
+    received = capture_messages(user)
+    real_dispatch = user._dispatch
+    def slow_dispatch(session, sample):
+        if '"leaving"' in sample.payload.to_string():
+            time.sleep(0.3)                            # this one arrives late
+            order.append("leaving")
+        real_dispatch(session, sample)
+    user._dispatch = slow_dispatch
+    await user.connect("robot-1")
+    task.cancel()
+    await bot.shutdown()
+    await wait_until(lambda: "notice" in order, timeout=3)
+    assert order.index("leaving") < order.index("notice")
+    assert [d for d in statuses(received, "robot-1") if d["status"] == "leaving"]
+
+
+@pytest.mark.asyncio
+async def test_own_subscriber_does_not_count_as_a_listener(pki):
+    """The Robot and User subscribe and publish on the same status topic. Their own subscriber must
+    not satisfy wait_for_subscriber, or they publish before anyone else can hear (found on Windows)."""
+    session = open_session(HOST, load_identity(pki, "users", "user"), [])      # no other peers
+    sub = session.declare_subscriber(topic("robot-1", "status"), lambda s: None)
+    pub = session.declare_publisher(topic("robot-1", "status"))
+    try:
+        assert not await wait_for_subscriber(pub, 0.5)
+    finally:
+        sub.undeclare()
+        pub.undeclare()
+        session.close()

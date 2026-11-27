@@ -15,3 +15,4 @@ venv/
 
 # Program logs
 logs/
+.ruff_cache/

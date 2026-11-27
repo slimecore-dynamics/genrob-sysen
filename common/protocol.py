@@ -28,8 +28,8 @@ Data plane (Zenoh topics from the assignment):
 
 ASSUMPTION A9: what each entity says on status (the assignment says "Status updates from any entity"):
   Robot:  joined, ready {motors} (in reply to every other "joined"), moving {command}, stopped,
-          rejected_command {command}, leaving
-  User:   joined, then free text typed by the operator
+          rejected_command {command}, leaving {reason} (always before its goodbye to the Cloud)
+  User:   joined (repeated until the Robot answers "ready"), then free text typed by the operator
   Player: ready {level} (in reply to every "joined"; if it has no reading yet, the reply waits for
           the first one, so the level is always measured, never assumed), alert {level, state} (when
           the level changes between normal and high, or the first reading is high), stopping
@@ -38,11 +38,16 @@ The "ready" replies mean whoever joins last still learns everyone's current stat
 anything announced before they joined never reached them.
 
 "joined" is sent only once the sender's status publisher matches a subscriber, because Zenoh
-silently drops a message published before the sender knows anyone is subscribed.
+silently drops a message published before the sender knows anyone is subscribed. Each side learns
+of the other's subscriptions separately, so the User's connect() also waits for the Robot's "ready":
+that proves the Robot can reach the User too, not just the other way round.
+
+Status (Zenoh) and session_ended (WebSocket) travel on different connections, so their order isn't
+guaranteed. When the Cloud reports robot_offline:robot_shutdown, the User waits briefly for the
+Robot's "leaving" (sent before its goodbye) before closing, so it isn't lost.
 """
 import asyncio
 import json
-import time
 
 ROBOT_PATH = "/robot"
 USER_PATH = "/user"
@@ -75,9 +80,23 @@ async def wait_for_subscriber(publisher, timeout: float) -> bool:
     Zenoh drops a put when the sender doesn't yet know of any subscriber for that key, and news of a
     new peer's subscriptions takes a few milliseconds to arrive.
     """
-    deadline = time.monotonic() + timeout
-    while not publisher.matching_status.matching:
-        if time.monotonic() > deadline:
-            return False
-        await asyncio.sleep(0.01)
-    return True
+    if publisher.matching_status.matching:
+        return True
+    loop = asyncio.get_running_loop()
+    matched = asyncio.Event()
+
+    def on_change(status) -> None:          # runs on a Zenoh thread
+        if status.matching:
+            loop.call_soon_threadsafe(matched.set)
+
+    # Zenoh calls on_change as soon as the first subscriber appears: no polling delay.
+    listener = publisher.declare_matching_listener(on_change)
+    try:
+        if publisher.matching_status.matching:      # it may have matched before the listener existed
+            return True
+        await asyncio.wait_for(matched.wait(), timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        listener.undeclare()

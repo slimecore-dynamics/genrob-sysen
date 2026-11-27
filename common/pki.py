@@ -8,6 +8,7 @@ machines, include every machine's address (setup_security --ip ...).
 """
 import datetime
 import ipaddress
+import os
 from pathlib import Path
 
 from cryptography import x509
@@ -27,9 +28,18 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def write_secret(path: Path, data: bytes) -> None:
+    """Write a private key or token readable only by its owner (mode 600 on Linux and macOS;
+    Windows ignores the mode, and the file inherits the folder's permissions there)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.chmod(path, 0o600)      # os.open's mode only applies to a new file; this covers an old one
+
+
 def _save(folder: Path, key, cert) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "key.pem").write_bytes(key.private_bytes(
+    write_secret(folder / "key.pem", key.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     (folder / "cert.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     return folder

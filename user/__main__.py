@@ -9,6 +9,7 @@ second terminal:  Get-Content logs\\user-user.log -Wait   (PowerShell)  or  tail
 """
 import argparse
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
@@ -47,7 +48,5 @@ if __name__ == "__main__":
     args.log_file = args.log_file or logs.LOG_DIR / f"user-{args.name}.log"
     logs.setup(args.log_file, console=False)      # keep the terminal free for typing
     zenoh.init_log_from_env_or("error")
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         sys.exit(asyncio.run(main(args)))
-    except KeyboardInterrupt:
-        pass

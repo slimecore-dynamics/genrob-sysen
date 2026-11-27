@@ -18,19 +18,28 @@ because each robot's triangle goes through its own Player.
 import asyncio
 import json
 import logging
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
-from common.config import (COMMAND_PATH_TIMEOUT, RECONNECT_BACKOFF_MAX, RECONNECT_BACKOFF_START,
-                           REQUEST_TIMEOUT)
+from common.config import (
+    COMMAND_PATH_TIMEOUT,
+    RECONNECT_BACKOFF_MAX,
+    RECONNECT_BACKOFF_START,
+    REQUEST_TIMEOUT,
+)
 from common.mesh import open_session, topic
 from common.protocol import USER_PATH, msg, parse, status_msg, wait_for_subscriber
 from common.security import client_tls_context, load_identity, read_token
 
 log = logging.getLogger("User")
+
+JOINED_RETRY = 0.25    # seconds between "joined" announcements while waiting for the Robot's answer
+LEAVING_WAIT = 1.0     # longest wait for a departing Robot's "leaving" (see _on_session_ended)
 
 
 class ControlError(Exception):
@@ -49,6 +58,8 @@ class RobotSession:
     command_pub: object
     status_pub: object
     subs: list = field(default_factory=list)
+    robot_heard: threading.Event = field(default_factory=threading.Event)   # Robot answered our "joined"
+    robot_left: threading.Event = field(default_factory=threading.Event)    # Robot said "leaving"
 
     def close(self) -> None:
         for s in self.subs:
@@ -109,8 +120,7 @@ class UserClient:
                 if fut and not fut.done():
                     fut.set_result(data)                  # a reply to one of our requests
                 elif data["type"] == "session_ended":
-                    self._notice(f"session with {data.get('robot_id')} ended: {data.get('reason')}")
-                    await self._close_session(data.get("robot_id"))
+                    await self._on_session_ended(data.get("robot_id"), data.get("reason"))
                 elif data["type"] == "robot_status":
                     self._notice(f"{data.get('robot_id')} is now {data.get('state')}")
         except ConnectionClosed:
@@ -128,6 +138,16 @@ class UserClient:
             await self._close_session(robot_id)
         self._notice("lost the Cloud Service; reconnecting")
         self.reconnector = asyncio.create_task(self._reconnect_loop())
+
+    async def _on_session_ended(self, robot_id, reason) -> None:
+        session = self.sessions.get(robot_id)
+        if session is not None and reason == "robot_offline:robot_shutdown":
+            # The Robot said goodbye, and it always says "leaving" to the triangle first. But that
+            # travels over Zenoh, not this connection, so it can arrive a moment after this message.
+            # Wait for it (briefly) before closing, so the Robot's last words aren't lost.
+            await asyncio.to_thread(session.robot_left.wait, LEAVING_WAIT)
+        self._notice(f"session with {robot_id} ended: {reason}")
+        await self._close_session(robot_id)
 
     async def _reconnect_loop(self) -> None:
         delay = RECONNECT_BACKOFF_START
@@ -150,7 +170,7 @@ class UserClient:
         self.on_notice(text)
 
     async def _request(self, type_: str, **fields) -> dict:
-        if self.ws is None:
+        if not self.online:
             raise ControlError("not connected to the Cloud Service (reconnecting)")
         rid = uuid.uuid4().hex[:8]
         fut = asyncio.get_running_loop().create_future()
@@ -172,7 +192,7 @@ class UserClient:
         return (await self._request("list_robots"))["robots"]
 
     async def connect(self, robot_id: str) -> None:
-        """Start a session and return only once commands can actually reach the robot."""
+        """Start a session and return only once messages flow both ways between us and the Robot."""
         if robot_id in self.sessions:
             raise ControlError("already_connected")
         reply = await self._request("connect", robot_id=robot_id)
@@ -181,28 +201,52 @@ class UserClient:
         session = RobotSession(robot_id, zsession,
                                command_pub=zsession.declare_publisher(topic(robot_id, "command")),
                                status_pub=zsession.declare_publisher(topic(robot_id, "status")))
-        session.subs = [zsession.declare_subscriber(topic(robot_id, t), self._on_message)
+        session.subs = [zsession.declare_subscriber(topic(robot_id, t),
+                                                    lambda sample, s=session: self._dispatch(s, sample))
                         for t in ("sensor", "processed", "status")]
         self.sessions[robot_id] = session
 
-        # Zenoh drops a put if the sender doesn't yet know of any matching subscriber. Wait until the
-        # Robot's command subscription (and someone's status subscription) has reached us, so the
-        # first command isn't lost and "joined" is heard.
+        # Zenoh drops a put if the sender doesn't yet know of any matching subscriber, and each side
+        # learns of the other's subscriptions separately. So check both directions:
+        # 1. Us -> Robot: our command publisher sees the Robot's command subscription.
         for pub in (session.command_pub, session.status_pub):
             if not await wait_for_subscriber(pub, COMMAND_PATH_TIMEOUT):
                 await self._close_session(robot_id)
                 raise ControlError("robot_unreachable")
-        session.status_pub.put(status_msg(self.name, "joined"))   # the Player replies with its current state
+        # 2. Robot -> us: the Robot answers our "joined" with "ready". Until that arrives, the Robot may
+        #    not know of our subscriptions yet, and anything it sends us would be lost. Our "joined"
+        #    can itself be lost the same way, so it's repeated until the answer comes.
+        deadline = time.monotonic() + COMMAND_PATH_TIMEOUT
+        while not session.robot_heard.is_set():
+            if time.monotonic() > deadline:
+                await self._close_session(robot_id)
+                raise ControlError("robot_unreachable")
+            session.status_pub.put(status_msg(self.name, "joined"))   # the Player replies too
+            await asyncio.to_thread(session.robot_heard.wait, JOINED_RETRY)
         log.info("connected to %s via Player at %s", robot_id, ep)
 
     async def disconnect(self, robot_id: str) -> None:
         if robot_id not in self.sessions:
             raise NotInSession(robot_id)
         await self._close_session(robot_id)
-        if self.ws is not None:                    # offline, the Cloud has already ended it
+        if self.online:                            # offline, the Cloud has already ended it
             await self._request("disconnect", robot_id=robot_id)
 
     # ------------------------------------------------------------------ data plane
+    def _dispatch(self, session: RobotSession, sample) -> None:
+        # Runs on a Zenoh thread, for everything we receive in one robot's session.
+        if str(sample.key_expr).endswith("/status"):
+            try:
+                data = json.loads(sample.payload.to_string())
+                if data.get("from") == session.robot_id:
+                    if data.get("status") == "ready":
+                        session.robot_heard.set()
+                    elif data.get("status") == "leaving":
+                        session.robot_left.set()
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        self._on_message(sample)
+
     def _on_message(self, sample) -> None:
         # Runs on a Zenoh thread; the assignment wants every received message printed.
         raw = sample.payload.to_string()

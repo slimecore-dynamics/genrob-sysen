@@ -15,9 +15,9 @@ TEXT_SUFFIXES = {".py", ".md", ".txt", ".ini", ".cfg", ".toml", ".yml", ".yaml",
 def repo_text_files():
     skip = {"__pycache__", ".pytest_cache", "pki", "logs", ".git", ".venv", "venv"}
     for path in REPO_ROOT.rglob("*"):
-        if path.is_file() and not skip & set(path.relative_to(REPO_ROOT).parts):
-            if path.suffix in TEXT_SUFFIXES or path.name == ".gitignore":
-                yield path
+        if (path.is_file() and not skip & set(path.relative_to(REPO_ROOT).parts)
+                and (path.suffix in TEXT_SUFFIXES or path.name == ".gitignore")):
+            yield path
 
 
 def test_every_file_is_plain_ascii():

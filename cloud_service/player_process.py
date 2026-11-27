@@ -70,8 +70,8 @@ def spawn_player(robot_id: str, host: str, pki_dir, module: str = DEFAULT_PLAYER
     ready: queue.Queue = queue.Queue()
 
     def drain() -> None:
-        for line in proc.stdout:
-            line = line.rstrip()
+        for raw in proc.stdout:
+            line = raw.rstrip()
             if line.startswith("READY "):
                 ready.put(line.split(" ", 1)[1])
             elif line:

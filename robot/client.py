@@ -19,8 +19,12 @@ import logging
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
-from common.config import RECONNECT_BACKOFF_MAX, RECONNECT_BACKOFF_START, SENSOR_INTERVAL
-import common.config as config
+from common import config
+from common.config import (
+    RECONNECT_BACKOFF_MAX,
+    RECONNECT_BACKOFF_START,
+    SENSOR_INTERVAL,
+)
 from common.mesh import open_session, topic
 from common.protocol import ROBOT_PATH, msg, parse, status_msg, wait_for_subscriber
 from common.security import client_tls_context, load_identity, read_token
@@ -61,6 +65,7 @@ class RobotClient:
         self.status_pub = None
         self.subs = []
         self.sensor_task: asyncio.Task | None = None
+        self.unclosed: list = []          # (Zenoh session, reason) detached but not closed yet
 
     # ------------------------------------------------------------------ main loop
     async def run(self) -> None:
@@ -94,15 +99,16 @@ class RobotClient:
         log.info("%s registered%s", self.robot_id, " (resumed)" if reply.get("resumed") else "")
 
         heartbeat = asyncio.create_task(self._heartbeat_loop())
-        reason = "cloud_connection_lost"
         try:
             await self._control_loop()
         except asyncio.CancelledError:
-            reason = "robot_shutdown"            # Ctrl+C: shutdown() says goodbye next
-            raise
-        finally:
+            # Ctrl+C: say "leaving" now, but leave the slow part (closing Zenoh) to shutdown(),
+            # which says goodbye to the Cloud first.
             heartbeat.cancel()
-            await self._leave_session(reason)
+            self._detach("robot_shutdown")
+            raise
+        heartbeat.cancel()
+        await self._leave_session("cloud_connection_lost")
 
     async def _heartbeat_loop(self) -> None:
         try:
@@ -157,7 +163,7 @@ class RobotClient:
             return
         try:
             pub.put(status_msg(self.robot_id, event, **fields))
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure here just means "not sent"
             log.debug("status %r not sent (%s)", event, err)
 
     def _on_command(self, sample) -> None:
@@ -194,8 +200,15 @@ class RobotClient:
             self._publish_status("ready", motors="moving" if moving else "stopped")
 
     async def _leave_session(self, reason) -> None:
-        # ASSUMPTION A7: safety first. Whenever the robot leaves a session or loses the Cloud,
-        # it stops its motors, so it never keeps driving on a stale command.
+        self._detach(reason)
+        await self._close_detached()
+
+    def _detach(self, reason) -> None:
+        """The quick part of leaving: stop, say "leaving", and let go of the session's pieces.
+
+        ASSUMPTION A7: safety first. Whenever the robot leaves a session or loses the Cloud,
+        it stops its motors, so it never keeps driving on a stale command.
+        """
         self.jetbot.stop()
         if self.zsession is None:
             return
@@ -212,21 +225,34 @@ class RobotClient:
                 release()
             except Exception:
                 log.exception("cleanup step failed while leaving the session")
-        try:
-            # Closing a Zenoh session can block for seconds (about 2 s seen on Windows). Do it in a
-            # worker thread so heartbeats and control messages keep flowing meanwhile.
-            await asyncio.to_thread(z.close)
-        except Exception:
-            log.exception("cleanup step failed while leaving the session")
-        log.info("left session (%s)", reason)
+        self.unclosed.append((z, reason))
+
+    async def _close_detached(self) -> None:
+        """The slow part of leaving: close detached Zenoh sessions.
+
+        Closing a Zenoh session can block for seconds (about 2 s seen on Windows). It runs in a
+        worker thread so heartbeats and control messages keep flowing meanwhile.
+        """
+        while self.unclosed:
+            z, reason = self.unclosed.pop(0)
+            try:
+                await asyncio.to_thread(z.close)
+            except Exception:
+                log.exception("cleanup step failed while leaving the session")
+            log.info("left session (%s)", reason)
 
     # ------------------------------------------------------------------ shutdown
     async def shutdown(self) -> None:
-        """Deliberate exit: say goodbye so the Cloud skips the reconnect grace period."""
+        """Deliberate exit: say "leaving" to the triangle, then goodbye to the Cloud.
+
+        That order matters: the goodbye makes the Cloud tear the triangle down, so anything the
+        Robot publishes after it may find nobody listening.
+        """
+        self._detach("robot_shutdown")
         if self.ws is not None:
             try:
                 await self.ws.send(msg("goodbye"))
                 await self.ws.close()
             except ConnectionClosed:
                 pass
-        await self._leave_session("robot_shutdown")
+        await self._close_detached()

@@ -15,11 +15,13 @@ import argparse
 from pathlib import Path
 
 from common.config import DEFAULT_PKI_DIR
-from common.pki import make_ca, make_cert
-from common.security import TokenStore, fingerprint, identity_dir, new_token
+from common.pki import make_ca, make_cert, write_secret
+from common.security import TokenStore, check_name, fingerprint, identity_dir, new_token
 
 
 def setup(pki_dir, robots=(), users=(), ips=("127.0.0.1",)) -> None:
+    for name in (*robots, *users):
+        check_name(name)                 # before writing anything
     pki_dir = Path(pki_dir)
     ca_dir = pki_dir / "ca"
     if not (ca_dir / "cert.pem").is_file():
@@ -37,7 +39,7 @@ def setup(pki_dir, robots=(), users=(), ips=("127.0.0.1",)) -> None:
         for name in names:
             folder = make_cert(ca_dir, identity_dir(pki_dir, kind, name), name, ips)
             token = new_token()
-            (folder / "token").write_text(token)
+            write_secret(folder / "token", token.encode())
             table[name] = fingerprint(token)          # the Cloud keeps only the fingerprint
             print(f"created identity      {folder}  (cert + token)")
 
@@ -45,11 +47,18 @@ def setup(pki_dir, robots=(), users=(), ips=("127.0.0.1",)) -> None:
     print(f"updated               {tokens_path}")
 
 
+def name_arg(text: str) -> str:
+    try:
+        return check_name(text)
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(str(err)) from None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create CA, certificates and tokens")
     parser.add_argument("--pki-dir", type=Path, default=DEFAULT_PKI_DIR)
-    parser.add_argument("--robots", nargs="*", default=[], metavar="ROBOT_ID")
-    parser.add_argument("--users", nargs="*", default=[], metavar="NAME")
+    parser.add_argument("--robots", nargs="*", default=[], metavar="ROBOT_ID", type=name_arg)
+    parser.add_argument("--users", nargs="*", default=[], metavar="NAME", type=name_arg)
     parser.add_argument("--ip", nargs="+", default=["127.0.0.1"], help="addresses the certificates are valid for")
     args = parser.parse_args()
     if not args.robots and not args.users:

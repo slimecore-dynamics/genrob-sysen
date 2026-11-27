@@ -16,6 +16,7 @@ FIRST_MESSAGE_TIMEOUT is closed, and at most MAX_CONNECTIONS are open at once.
 Robot states:  online -> in_session -> (reconnecting) -> offline
 """
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -25,11 +26,16 @@ from pathlib import Path
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
-import common.config as config
+from cloud_service.player_process import (
+    DEFAULT_PLAYER_MODULE,
+    PlayerProcess,
+    PlayerSpawnError,
+    spawn_player,
+)
+from common import config
 from common.config import HEARTBEAT_INTERVAL, cloud_url
 from common.protocol import ROBOT_PATH, USER_PATH, msg, parse
 from common.security import TokenStore, load_identity, server_tls_context
-from cloud_service.player_process import DEFAULT_PLAYER_MODULE, PlayerProcess, PlayerSpawnError, spawn_player
 
 log = logging.getLogger("Cloud")
 
@@ -203,10 +209,8 @@ class CloudService:
 
     async def _notify_user(self, rec: RobotRecord, state: str) -> None:
         if rec.session:
-            try:
+            with contextlib.suppress(ConnectionClosed):
                 await rec.session.user_ws.send(msg("robot_status", robot_id=rec.robot_id, state=state))
-            except ConnectionClosed:
-                pass
 
     # ------------------------------------------------------------------ users
     async def user_handler(self, ws) -> None:
@@ -305,7 +309,5 @@ class CloudService:
         log.info("session %s ended (%s), Player stopped", s.session_id, reason)
         targets = [rec.ws] + ([s.user_ws] if notify_user else [])
         for ws in targets:
-            try:
+            with contextlib.suppress(ConnectionClosed):
                 await ws.send(msg("session_ended", robot_id=rec.robot_id, reason=reason))
-            except ConnectionClosed:
-                pass

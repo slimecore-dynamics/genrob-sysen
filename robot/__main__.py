@@ -7,14 +7,22 @@ Needs its identity from: python -m tools.setup_security --robots ROBOT_ID (see R
 """
 import argparse
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
 import zenoh
 
 from common import logs
-from common.config import (DEFAULT_CLOUD_PORT, DEFAULT_HOST, DEFAULT_PKI_DIR, SENSOR_AMPLITUDE,
-                           SENSOR_CENTER, SENSOR_PERIOD, cloud_url)
+from common.config import (
+    DEFAULT_CLOUD_PORT,
+    DEFAULT_HOST,
+    DEFAULT_PKI_DIR,
+    SENSOR_AMPLITUDE,
+    SENSOR_CENTER,
+    SENSOR_PERIOD,
+    cloud_url,
+)
 from robot.client import RegistrationRefused, RobotClient
 from robot.sensor import SineSensor
 
@@ -51,7 +59,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     logs.setup(args.log_file or logs.LOG_DIR / f"{args.robot_id}.log")
     zenoh.init_log_from_env_or("error")
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         sys.exit(asyncio.run(main(args)))
-    except KeyboardInterrupt:
-        pass
