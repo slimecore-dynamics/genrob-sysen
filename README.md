@@ -177,7 +177,7 @@ This creates a private certificate authority, a certificate for each program, an
 | Impersonating a robot or user | Each must present its token. The Cloud Service stores only SHA-256 fingerprints and compares them in constant time. | `test_robot_with_wrong_token_is_refused`, `test_robot_cannot_use_another_robots_token`, `test_user_with_wrong_token_is_refused` |
 | Taking over a session during the reconnect grace period | Resuming a session also requires the robot's token | `test_impostor_cannot_take_over_during_reconnect_grace` |
 | Joining a session and sending commands | Zenoh mutual TLS: every peer must present a certificate signed by the project's CA | `test_untrusted_zenoh_peer_cannot_join_or_command`, `test_unencrypted_zenoh_peer_cannot_join` |
-| Commanding a robot with another valid certificate (for example robot-2's) | Authorization: the Robot's Zenoh access-control rules accept commands only from the session's User's certificate, and session data only from that User and the Player. Certificate names include their kind (`robot:robot-1`, `user:alice`), so a robot that shares a User's name gets none of that User's permissions (`robot_access_control` in `common/mesh.py`, `cert_name` in `common/security.py`) | `test_another_robots_certificate_cannot_command_this_robot`, `test_robot_named_like_the_user_cannot_command` |
+| Commanding a robot with another valid certificate (for example robot-2's) | Authorization: the Robot's Zenoh access-control rules accept commands only from the session's User's certificate, and session data only from that User and the Player. Certificate names include their kind (`robot:robot-1`, `user:alice`), so a robot that shares a User's name gets none of that User's permissions (`robot_access_control` in `common/mesh.py`, `cert_name` in `common/security.py`) | `test_another_robots_certificate_cannot_command_this_robot` |
 | Holding connections open without identifying | Closed after `FIRST_MESSAGE_TIMEOUT` (5 s) | `test_silent_connection_is_closed` |
 | Opening too many connections | Refused beyond `MAX_CONNECTIONS` (close code 1013, "try again later") | `test_connection_cap` |
 | Other local users reading keys | Private keys and tokens are written with mode 600 (Linux and macOS) | `test_private_keys_and_tokens_are_owner_only` |
@@ -217,6 +217,7 @@ Possible next steps:
 | Unknown robot | `robot_not_found` | `test_robot_not_found` |
 | Duplicate registration | The second robot is refused (`duplicate_registration`) | `test_duplicate_registration_refused` |
 | Player fails to start | The Player is killed, the User receives `player_spawn_failed`, and the robot returns to `online` | `test_player_spawn_failure` |
+| Player exits mid-session (crash or kill) | The watchdog notices within half a second and ends the session (`player_exited`); the Robot and User are told, the motors stop, and the robot returns to `online` | `test_player_exiting_mid_session_ends_the_session` |
 | Robot already in a session | The second User receives `robot_busy` | `test_second_user_gets_robot_busy` |
 | Second connect while the first User's Player is starting | The robot is `starting`, so the second User receives `robot_busy` | `test_robot_is_starting_while_its_player_spawns` |
 | Robot reconnecting | `robot_reconnecting` | `test_connect_while_robot_reconnecting` |
@@ -290,11 +291,11 @@ The direct Robot-User link is established only after both peers have connected t
 ## Testing
 
 ```bash
-python -m pytest        # 77 tests
+python -m pytest        # 78 tests
 python -m pytest -v     # list each test by name
 ```
 
-On Windows, 75 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
+On Windows, 76 tests pass and 2 are skipped: the tests for Ctrl+C isolation of the Player and for file permissions only run on Linux and macOS.
 
 Every push runs the suite on GitHub Actions (Linux with Python 3.11 and 3.14, Windows with Python 3.14). macOS can be run manually from the Actions tab. See `.github/workflows/tests.yml`.
 

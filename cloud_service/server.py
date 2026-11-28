@@ -6,7 +6,8 @@ What runs once start() is called:
   - a wss:// server. For every client that connects, the websockets library calls _route(),
     which hands the connection to robot_handler() (/robot) or user_handler() (/user).
   - _watchdog(), a background loop that marks robots offline when heartbeats stop or a
-    dropped robot doesn't come back within RECONNECT_GRACE.
+    dropped robot doesn't come back within RECONNECT_GRACE, and ends any session whose
+    Player has exited.
 
 Security: every robot must send its token in `register` (including when reconnecting), every user
 must send `hello` with its token first. Flooding: a connection that doesn't identify itself within
@@ -215,6 +216,12 @@ class CloudService:
                     await self.mark_offline(rec, "heartbeat_timeout")
                 elif rec.state == "reconnecting" and now - rec.disconnected_at > RECONNECT_GRACE:
                     await self.mark_offline(rec, "reconnect_timeout")
+                elif rec.session and rec.session.player.proc.poll() is not None:
+                    # The Player exited on its own (crashed or was killed) after it started.
+                    # end_session tells the Robot and User, and the robot returns to online.
+                    log.error("Player for %s exited unexpectedly (exit code %s)",
+                              rec.robot_id, rec.session.player.proc.returncode)
+                    await self.end_session(rec, "player_exited")
 
     async def _notify_user(self, rec: RobotRecord, state: str) -> None:
         if rec.session:

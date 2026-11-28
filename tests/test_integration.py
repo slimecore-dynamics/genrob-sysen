@@ -254,6 +254,16 @@ async def test_player_spawn_failure(cloud, make_robot, make_user):
         await user.connect("robot-1")
     assert cloud.robots["robot-1"].state == "online"   # free to try again
 
+@pytest.mark.asyncio
+async def test_player_exiting_mid_session_ends_the_session(cloud, make_robot, make_user):
+    bot, _ = await make_robot()
+    user = await make_user()
+    await user.connect("robot-1")
+    cloud.robots["robot-1"].session.player.proc.kill()
+    await wait_until(lambda: cloud.robots["robot-1"].state == "online")
+    await wait_until(lambda: "robot-1" not in user.sessions and bot.zsession is None)
+    await user.connect("robot-1")                       # a new session can start
+    
 
 # ================================================================ other failure handling
 @pytest.mark.asyncio
