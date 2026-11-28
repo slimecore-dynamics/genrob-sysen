@@ -127,7 +127,7 @@ The demonstration scenario from the assignment maps as follows:
 
 **Zenoh** provides peer-to-peer publish/subscribe without a broker in the data path. The Robot and User are only given the Player's address; Zenoh's gossip introduces them to each other, which produces the triangle the assignment describes. General Robotics' GRID platform also uses Zenoh: in its dev mode, the client's `connect()` takes a combined `{"player": ..., "edge": ...}` Zenoh configuration ([GRID docs: connect](https://docs.generalrobotics.dev/v2.1/python-api/grid-nexus-client/connect)).
 
-**WebSocket** is used for control because the Cloud Service needs to push messages to robots (for example, "join this session"), not only answer requests. GRID's client similarly uses a signaling WebSocket, with separate URLs for robots, users and players ([GRID docs: GridEndpointProfile](https://docs.generalrobotics.dev/v2.2/python-api/grid-nexus-client/gridendpointprofile), [connect](https://docs.generalrobotics.dev/v2.1/python-api/grid-nexus-client/connect)).
+**WebSocket** is used for control because the Cloud Service needs to push messages to robots (for example, "join this session"), not only answer requests. GRID's client similarly uses separate signaling URLs for robots, users and players ([GRID docs: GridEndpointProfile](https://docs.generalrobotics.dev/v2.2/python-api/grid-nexus-client/gridendpointprofile), [connect](https://docs.generalrobotics.dev/v2.1/python-api/grid-nexus-client/connect)).
 
 ### Session setup
 
