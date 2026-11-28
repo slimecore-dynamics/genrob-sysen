@@ -46,6 +46,17 @@ def identity_dir(pki_dir, kind: str, name: str = "") -> Path:
     return base / kind if kind in ("cloud", "player") else base / kind / check_name(name)
 
 
+def cert_name(kind: str, name: str = "") -> str:
+    """The common name in a certificate: "cloud", "player", "robot:<id>" or "user:<name>".
+
+    Zenoh's access-control rules match peers by this name alone. Robot ids and user names share
+    one character set, so without the prefix a robot called "alice" would get user alice's
+    permissions. check_name() refuses ":", so a prefixed name can't be forged with a crafted id.
+    """
+    prefix = {"robots": "robot", "users": "user"}.get(kind)
+    return f"{prefix}:{check_name(name)}" if prefix else kind
+
+
 def load_identity(pki_dir, kind: str, name: str = "") -> Identity:
     folder = identity_dir(pki_dir, kind, name)
     ident = Identity(folder / "cert.pem", folder / "key.pem", Path(pki_dir) / "ca" / "cert.pem")

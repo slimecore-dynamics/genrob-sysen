@@ -15,7 +15,14 @@ from pathlib import Path
 
 from common.config import DEFAULT_PKI_DIR
 from common.pki import make_ca, make_cert, write_secret
-from common.security import TokenStore, check_name, fingerprint, identity_dir, new_token
+from common.security import (
+    TokenStore,
+    cert_name,
+    check_name,
+    fingerprint,
+    identity_dir,
+    new_token,
+)
 
 
 def setup(pki_dir, robots=(), users=(), ips=("127.0.0.1",)) -> None:
@@ -28,7 +35,7 @@ def setup(pki_dir, robots=(), users=(), ips=("127.0.0.1",)) -> None:
         print(f"created CA            {ca_dir}")
 
     for kind in ("cloud", "player"):
-        make_cert(ca_dir, identity_dir(pki_dir, kind), kind, ips)
+        make_cert(ca_dir, identity_dir(pki_dir, kind), cert_name(kind), ips)
         print(f"created certificate   {identity_dir(pki_dir, kind)}")
 
     tokens_path = pki_dir / "tokens.json"
@@ -36,7 +43,7 @@ def setup(pki_dir, robots=(), users=(), ips=("127.0.0.1",)) -> None:
 
     for kind, names, table in (("robots", robots, store.robots), ("users", users, store.users)):
         for name in names:
-            folder = make_cert(ca_dir, identity_dir(pki_dir, kind, name), name, ips)
+            folder = make_cert(ca_dir, identity_dir(pki_dir, kind, name), cert_name(kind, name), ips)
             token = new_token()
             write_secret(folder / "token", token.encode())
             table[name] = fingerprint(token)          # the Cloud keeps only the fingerprint

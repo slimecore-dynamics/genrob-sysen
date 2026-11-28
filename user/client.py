@@ -32,7 +32,7 @@ from common.config import (
     RECONNECT_BACKOFF_START,
     REQUEST_TIMEOUT,
 )
-from common.mesh import open_session, topic
+from common.mesh import close_in_thread, open_session, topic
 from common.protocol import USER_PATH, msg, parse, status_msg, wait_for_subscriber
 from common.security import client_tls_context, load_identity, read_token
 
@@ -303,9 +303,9 @@ class UserClient:
     async def _close_session(self, robot_id) -> None:
         session = self.sessions.pop(robot_id, None)
         if session is not None:
-            # Closing a Zenoh session can block for seconds (about 2 s seen on Windows). Do it in a
-            # worker thread so the prompt and the Cloud connection keep working meanwhile.
-            await asyncio.to_thread(session.close)
+            # Closing a Zenoh session can block for seconds; the prompt and the Cloud connection
+            # keep working meanwhile.
+            await close_in_thread(session.close, robot_id)
 
     async def shutdown(self) -> None:
         self.closing = True

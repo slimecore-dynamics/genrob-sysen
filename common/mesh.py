@@ -6,13 +6,18 @@ Every program passes its Identity, so links are tls/ with mutual TLS: a peer mus
 certificate signed by our CA to connect. identity=None (plain tcp/) exists only so the
 benchmark can measure what TLS costs; the programs never use it.
 """
+import asyncio
 import json
+import logging
 import socket
+import threading
 
 import zenoh
 
 from common.config import ZENOH_SCOUTING_DELAY_MS
-from common.security import Identity
+from common.security import Identity, cert_name
+
+log = logging.getLogger("mesh")
 
 
 def endpoint(port: int, host: str, tls: bool = True) -> str:
@@ -67,7 +72,7 @@ def robot_access_control(robot_id: str, user_name: str) -> dict:
     Mutual TLS proves a peer holds a certificate from our CA, but any such certificate (another
     robot's, say) could otherwise publish to robot/{robot_id}/command. Zenoh checks these rules on
     the Robot itself, against the common name in each peer's certificate (tools/setup_security.py
-    names every certificate after its robot, user, or "player"):
+    names certificates "player", "robot:<id>" and "user:<name>"; see cert_name):
       - session data (sensor, status, processed) flows only with the Player and this session's User
       - commands are accepted only from this session's User (ASSUMPTION A6: the Player doesn't relay)
       - everything else, including any other peer, is denied
@@ -79,8 +84,8 @@ def robot_access_control(robot_id: str, user_name: str) -> dict:
         "enabled": True,
         "default_permission": "deny",
         "rules": [rule("session-data", ("sensor", "status", "processed")), rule("commands", ("command",))],
-        "subjects": [{"id": "player", "cert_common_names": ["player"]},
-                     {"id": "operator", "cert_common_names": [user_name]}],
+        "subjects": [{"id": "player", "cert_common_names": [cert_name("player")]},
+                     {"id": "operator", "cert_common_names": [cert_name("users", user_name)]}],
         "policies": [{"rules": ["session-data"], "subjects": ["player", "operator"]},
                      {"rules": ["commands"], "subjects": ["operator"]}],
     }
@@ -95,3 +100,21 @@ def open_session(host: str, identity: Identity | None, connect_to=(),
                  access_control: dict | None = None) -> zenoh.Session:
     """Open a Zenoh session listening on a free port. Blocking: async callers run it on a thread."""
     return zenoh.open(make_config(host, free_port(host), identity, connect_to, access_control))
+
+
+async def close_in_thread(close, what: str) -> None:
+    """Run a blocking Zenoh close (about 2 s seen on Windows) without blocking the event loop.
+
+    It runs in its own thread rather than through asyncio.to_thread(): a to_thread() call that is
+    cancelled before a worker picks it up (the program shutting down right as a session ends)
+    never runs at all. The session would stay open, and its callback threads would keep the
+    process from exiting. A started thread always finishes, and Python waits for it at exit.
+    """
+    def run():
+        try:
+            close()
+        except Exception:
+            log.exception("closing %s failed", what)
+    closer = threading.Thread(target=run, name=f"close-{what}")
+    closer.start()
+    await asyncio.to_thread(closer.join)

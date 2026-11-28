@@ -190,20 +190,24 @@ def test_names_that_could_escape_a_folder_or_topic_are_refused(pki, name):
 
 @pytest.mark.asyncio
 async def test_another_robots_certificate_cannot_command_this_robot(cloud, make_robot, make_user, pki):
-    """Authorization, not just authentication: robot-2's certificate is genuine (signed by our CA),
-    so mutual TLS lets it in, but the Robot's ACL accepts commands only from the session's User."""
+    """Authorization, not just authentication: these certificates are genuine (signed by our CA),
+    so mutual TLS lets them in, but the Robot's ACL accepts commands only from the session's User.
+    One of them is a robot named "user", like the session's User: certificate names carry their
+    kind (common.security.cert_name), so sharing a name grants nothing."""
+    setup(pki, robots=["user"])
     bot, _ = await make_robot()
     user = await make_user()
     await user.connect("robot-1")
     player_ep = cloud.robots["robot-1"].session.player.endpoint
-    other = open_session(HOST, load_identity(pki, "robots", "robot-2"), [player_ep])
-    try:
-        robot_zid = bot.zsession.info.zid()
-        await wait_until(lambda: robot_zid in list(other.info.peers_zid()))   # linked to the robot...
-        other.put(topic("robot-1", "command"), json.dumps({"command": "forward"}))
-        await asyncio.sleep(0.5)
-        assert bot.jetbot.left_motor == 0.0                                    # ...but not obeyed
-        user.send_command("robot-1", "forward")                                # the session's User is
-        await wait_until(lambda: bot.jetbot.left_motor > 0)
-    finally:
-        other.close()
+    robot_zid = bot.zsession.info.zid()
+    for attacker in ("robot-2", "user"):
+        other = open_session(HOST, load_identity(pki, "robots", attacker), [player_ep])
+        try:
+            await wait_until(lambda o=other: robot_zid in list(o.info.peers_zid()))   # linked to the robot...
+            other.put(topic("robot-1", "command"), json.dumps({"command": "forward"}))
+            await asyncio.sleep(0.5)
+            assert bot.jetbot.left_motor == 0.0, attacker                          # ...but not obeyed
+        finally:
+            other.close()
+    user.send_command("robot-1", "forward")                                    # the session's User is
+    await wait_until(lambda: bot.jetbot.left_motor > 0)

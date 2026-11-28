@@ -24,7 +24,7 @@ from common.config import (
     RECONNECT_BACKOFF_START,
     SENSOR_INTERVAL,
 )
-from common.mesh import open_session, robot_access_control, topic
+from common.mesh import close_in_thread, open_session, robot_access_control, topic
 from common.protocol import ROBOT_PATH, msg, parse, status_msg, wait_for_subscriber
 from common.security import check_name, client_tls_context, load_identity, read_token
 from robot.jetbot import FakeJetbot
@@ -243,10 +243,7 @@ class RobotClient:
         """
         while self.unclosed:
             z, reason = self.unclosed.pop(0)
-            try:
-                await asyncio.to_thread(z.close)
-            except Exception:
-                log.exception("cleanup step failed while leaving the session")
+            await close_in_thread(z.close, "session")
             log.info("left session (%s)", reason)
 
     # ------------------------------------------------------------------ shutdown
